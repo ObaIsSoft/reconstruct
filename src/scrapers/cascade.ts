@@ -2,6 +2,8 @@
 // Decides which scraper(s) to use based on site characteristics and config.
 
 import { loadConfig, type ReconstructConfig } from "../schema/config.js";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type DeepPartial<T> = T extends object ? { [K in keyof T]?: DeepPartial<T[K]> } : T;
 import { type URLClass } from "../schema/types.js";
 import {
   fetchUrl,
@@ -87,6 +89,7 @@ export interface CascadePage {
   footer_links: Array<{ href: string; label: string }>;
   all_links: Array<{ href: string; label: string }>;
   network_requests: Array<{ url: string; method: string; type: string; status: number; size_bytes: number }>;
+  shadow_roots: Array<{ host_tag: string; host_selector: string; inner_html: string }>;
   is_spa: boolean;
   used_scraper: "webfetch" | "lightpanda" | "firecrawl" | "browserbase";
   error?: string;
@@ -145,13 +148,14 @@ export async function scrapeSinglePage(
       footer_links: [],
       all_links: [],
       network_requests: bb.network_requests,
+      shadow_roots: [],
       is_spa: isSpaHtml(bb.html),
       used_scraper: "browserbase",
       error: bb.error,
     };
   }
 
-  if (needsBrowser && prefer !== "firecrawl") {
+  if (needsBrowser && (prefer as string) !== "firecrawl") {
     // Lightpanda
     const lp: LightpandaPage = await scrapePage(url, {
       lightpanda_url: config.scrapers.lightpanda_url,
@@ -176,6 +180,7 @@ export async function scrapeSinglePage(
       footer_links: lp.footer_links,
       all_links: lp.links,
       network_requests: [],
+      shadow_roots: lp.shadow_roots,
       is_spa: lp.is_spa,
       used_scraper: "lightpanda",
       error: lp.error,
@@ -207,6 +212,7 @@ export async function scrapeSinglePage(
       footer_links: [],
       all_links: result.page.links.map((href) => ({ href, label: "" })),
       network_requests: [],
+      shadow_roots: [],
       is_spa: isSpaHtml(result.page.html),
       used_scraper: "firecrawl",
       error: result.error,
@@ -230,6 +236,7 @@ export async function scrapeSinglePage(
     footer_links: extractFooterLinks(raw.body, url),
     all_links: extractAllLinks(raw.body, url),
     network_requests: [],
+    shadow_roots: [],
     is_spa: isSpaHtml(raw.body),
     used_scraper: "webfetch",
   };
@@ -249,7 +256,7 @@ export interface CrawlResult {
 
 export async function crawlSite(
   startUrl: string,
-  configOverrides?: Partial<ReconstructConfig>
+  configOverrides?: DeepPartial<ReconstructConfig>
 ): Promise<CrawlResult> {
   const config = loadConfig(configOverrides);
   const base = new URL(startUrl);
@@ -372,6 +379,7 @@ export async function crawlSite(
           footer_links: [],
           all_links: fp.links.map((href) => ({ href, label: "" })),
           network_requests: [],
+          shadow_roots: [],
           is_spa: isSpaHtml(fp.html),
           used_scraper: "firecrawl",
         });
@@ -504,6 +512,7 @@ function emptyCascadePage(
     footer_links: [],
     all_links: [],
     network_requests: [],
+    shadow_roots: [],
     is_spa: false,
     used_scraper: scraper,
     error,

@@ -38,12 +38,13 @@ export const AuthConfigSchema = z.object({
   cookies: z.record(z.string(), z.string()).default({}),
 });
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const ReconstructConfigSchema = z.object({
   _note: z.string().optional(),
-  crawl: CrawlConfigSchema.default({}),
-  scrapers: ScraperConfigSchema.default({}),
-  output: OutputConfigSchema.default({}),
-  auth: AuthConfigSchema.default({}),
+  crawl: CrawlConfigSchema.default({} as any),
+  scrapers: ScraperConfigSchema.default({} as any),
+  output: OutputConfigSchema.default({} as any),
+  auth: AuthConfigSchema.default({} as any),
 });
 
 export type CrawlConfig = z.infer<typeof CrawlConfigSchema>;
@@ -51,6 +52,11 @@ export type ScraperConfig = z.infer<typeof ScraperConfigSchema>;
 export type OutputConfig = z.infer<typeof OutputConfigSchema>;
 export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 export type ReconstructConfig = z.infer<typeof ReconstructConfigSchema>;
+
+// Deep partial — allows passing { crawl: { max_pages: 10 } } without all fields
+type DeepPartial<T> = T extends object
+  ? { [K in keyof T]?: DeepPartial<T[K]> }
+  : T;
 
 // ── Loader ───────────────────────────────────────────────────────────────────
 
@@ -78,7 +84,7 @@ function deepMerge(base: unknown, override: unknown): unknown {
 
 let _config: ReconstructConfig | null = null;
 
-export function loadConfig(overrides?: Partial<ReconstructConfig>): ReconstructConfig {
+export function loadConfig(overrides?: DeepPartial<ReconstructConfig>): ReconstructConfig {
   if (_config && !overrides) return _config;
 
   // Global config: ~/.reconstruct/config.json
@@ -89,10 +95,55 @@ export function loadConfig(overrides?: Partial<ReconstructConfig>): ReconstructC
   const projectPath = join(process.cwd(), "reconstruct.config.json");
   const projectRaw = existsSync(projectPath) ? readJsonFile(projectPath) : {};
 
-  // Merge: global → project → call-level overrides
-  const merged = deepMerge(deepMerge(globalRaw, projectRaw), overrides ?? {});
+  // Environment variable overrides — standard names for MCP env injection
+  // (Claude Desktop / Cursor pass keys via "env" in their MCP config block)
+  const envOverrides: Record<string, unknown> = {};
+  if (process.env.FIRECRAWL_API_KEY)      envOverrides.firecrawl_api_key     = process.env.FIRECRAWL_API_KEY;
+  if (process.env.FIRECRAWL_API_URL)      envOverrides.firecrawl_api_url      = process.env.FIRECRAWL_API_URL;
+  if (process.env.BROWSERBASE_API_KEY)    envOverrides.browserbase_api_key    = process.env.BROWSERBASE_API_KEY;
+  if (process.env.BROWSERBASE_PROJECT_ID) envOverrides.browserbase_project_id = process.env.BROWSERBASE_PROJECT_ID;
+  if (process.env.LIGHTPANDA_URL)         envOverrides.lightpanda_url         = process.env.LIGHTPANDA_URL;
+  if (process.env.RECONSTRUCT_PREFER)     envOverrides.prefer                 = process.env.RECONSTRUCT_PREFER;
+  if (process.env.RECONSTRUCT_MAX_PAGES)  envOverrides.max_pages              = parseInt(process.env.RECONSTRUCT_MAX_PAGES, 10);
+  if (process.env.RECONSTRUCT_CACHE_DIR)  envOverrides.cache_dir              = process.env.RECONSTRUCT_CACHE_DIR;
 
-  const result = ReconstructConfigSchema.safeParse(merged);
+  // Merge: global → project → env vars → call-level overrides
+  // env vars sit above file config but below explicit call-level overrides
+  const scraperEnv = Object.fromEntries(
+    Object.entries(envOverrides).filter(([k]) =>
+      ["firecrawl_api_key","firecrawl_api_url","browserbase_api_key","browserbase_project_id","lightpanda_url","prefer"].includes(k)
+    )
+  );
+  const crawlEnv = Object.fromEntries(
+    Object.entries(envOverrides).filter(([k]) => ["max_pages"].includes(k))
+  );
+  const outputEnv = Object.fromEntries(
+    Object.entries(envOverrides).filter(([k]) => ["cache_dir"].includes(k))
+  );
+
+  const envLayer = {
+    ...(Object.keys(scraperEnv).length ? { scrapers: scraperEnv } : {}),
+    ...(Object.keys(crawlEnv).length   ? { crawl: crawlEnv }     : {}),
+    ...(Object.keys(outputEnv).length  ? { output: outputEnv }   : {}),
+  };
+
+  const merged = deepMerge(
+    deepMerge(deepMerge(globalRaw, projectRaw), envLayer),
+    overrides ?? {}
+  ) as Record<string, unknown>;
+
+  // Zod v4 does not cascade nested defaults — .default({}) on a sub-schema returns {} as-is
+  // without re-parsing through the sub-schema's own field defaults. Parse each section
+  // independently first so every field gets its default, then parse the top-level schema.
+  const withDefaults = {
+    ...merged,
+    crawl:    CrawlConfigSchema.parse(merged.crawl    ?? {}),
+    scrapers: ScraperConfigSchema.parse(merged.scrapers ?? {}),
+    output:   OutputConfigSchema.parse(merged.output   ?? {}),
+    auth:     AuthConfigSchema.parse(merged.auth      ?? {}),
+  };
+
+  const result = ReconstructConfigSchema.safeParse(withDefaults);
   if (!result.success) {
     const issues = result.error.issues
       .map((i) => `  ${i.path.join(".")}: ${i.message}`)
