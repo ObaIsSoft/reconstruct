@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { loadConfig } from "../schema/config.js";
+import { loadConfig, type DeepPartial } from "../schema/config.js";
 import { crawlSite } from "../scrapers/cascade.js";
 import { mergeCrawlToSchema } from "../extractors/merge.js";
 import { readCache, writeCache } from "../cache/store.js";
@@ -52,8 +52,7 @@ export function registerAnalyzeTool(server: McpServer): void {
       }
 
       // Surface mode: crawl homepage only
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const crawlConfig: any = depth === "surface"
+      const crawlConfig: DeepPartial<{ crawl: { max_pages: number; max_depth: number } }> | undefined = depth === "surface"
         ? { crawl: { max_pages: 1, max_depth: 1 } }
         : max_pages
           ? { crawl: { max_pages } }

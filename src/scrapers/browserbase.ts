@@ -249,6 +249,10 @@ export async function scrapeWithBrowserbase(
       error: err instanceof Error ? err.message : String(err),
     };
   } finally {
-    if (sessionId) await client.terminateSession(sessionId).catch(() => {});
+    if (sessionId) {
+      await client.terminateSession(sessionId).catch((err) => {
+        console.error("[browserbase] Failed to terminate session:", err);
+      });
+    }
   }
 }

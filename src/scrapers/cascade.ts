@@ -1,9 +1,7 @@
 // Cascade orchestrator — URL classification, tool selection, discovery, full crawl
 // Decides which scraper(s) to use based on site characteristics and config.
 
-import { loadConfig, type ReconstructConfig } from "../schema/config.js";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type DeepPartial<T> = T extends object ? { [K in keyof T]?: DeepPartial<T[K]> } : T;
+import { loadConfig, type DeepPartial, type ReconstructConfig } from "../schema/config.js";
 import { type URLClass } from "../schema/types.js";
 import {
   fetchUrl,

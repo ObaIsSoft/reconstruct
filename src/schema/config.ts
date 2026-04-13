@@ -41,9 +41,14 @@ export const AuthConfigSchema = z.object({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const ReconstructConfigSchema = z.object({
   _note: z.string().optional(),
+  // Using type assertion because Zod v4's .default() requires full object shape
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   crawl: CrawlConfigSchema.default({} as any),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   scrapers: ScraperConfigSchema.default({} as any),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   output: OutputConfigSchema.default({} as any),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   auth: AuthConfigSchema.default({} as any),
 });
 
@@ -52,6 +57,22 @@ export type ScraperConfig = z.infer<typeof ScraperConfigSchema>;
 export type OutputConfig = z.infer<typeof OutputConfigSchema>;
 export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 export type ReconstructConfig = z.infer<typeof ReconstructConfigSchema>;
+
+// Helper to get config with defaults
+function withDefaults(config: ReconstructConfig): ReconstructConfig {
+  return {
+    _note: config._note,
+    crawl: { ...CrawlConfigSchema.parse({}), ...config.crawl },
+    scrapers: { ...ScraperConfigSchema.parse({}), ...config.scrapers },
+    output: { ...OutputConfigSchema.parse({}), ...config.output },
+    auth: { ...AuthConfigSchema.parse({}), ...config.auth },
+  };
+}
+
+// Public function to get config with all defaults applied (used by callers)
+export function getResolvedConfig(config: ReconstructConfig): ReconstructConfig {
+  return withDefaults(config);
+}
 
 // Deep partial — allows passing { crawl: { max_pages: 10 } } without all fields
 export type DeepPartial<T> = T extends object
