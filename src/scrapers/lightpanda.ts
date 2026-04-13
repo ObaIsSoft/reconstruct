@@ -39,6 +39,11 @@ export interface PageLink {
 
 // ── Lightpanda API client ─────────────────────────────────────────────────────
 
+// Type guard for API responses
+function isRecord(obj: unknown): obj is Record<string, unknown> {
+  return obj !== null && typeof obj === "object";
+}
+
 export class LightpandaClient {
   private baseUrl: string;
   private sessionId: string | null = null;
@@ -60,38 +65,53 @@ export class LightpandaClient {
   }
 
   async navigate(url: string, cookies?: string): Promise<void> {
-    const result = (await this.post("/navigate", {
+    const result = await this.post("/navigate", {
       url,
       cookies: cookies ?? "",
-    })) as { session_id?: string };
-    if (result.session_id) this.sessionId = result.session_id;
+    });
+    if (isRecord(result) && typeof result.session_id === "string") {
+      this.sessionId = result.session_id;
+    }
   }
 
   async evaluate(script: string): Promise<string> {
-    const result = (await this.post("/evaluate", {
+    const result = await this.post("/evaluate", {
       session_id: this.sessionId,
       script,
-    })) as { result: string };
-    return result.result ?? "";
+    });
+    if (isRecord(result) && typeof result.result === "string") {
+      return result.result;
+    }
+    return "";
   }
 
   async getSemanticTree(): Promise<string> {
-    const result = (await this.post("/semantic-tree", {
+    const result = await this.post("/semantic-tree", {
       session_id: this.sessionId,
-    })) as { tree: string };
-    return result.tree ?? "";
+    });
+    if (isRecord(result) && typeof result.tree === "string") {
+      return result.tree;
+    }
+    return "";
   }
 
   async getInteractiveElements(): Promise<InteractiveElement[]> {
-    const result = (await this.post("/interactive-elements", {
+    const result = await this.post("/interactive-elements", {
       session_id: this.sessionId,
-    })) as { elements: InteractiveElement[] };
-    return result.elements ?? [];
+    });
+    if (isRecord(result) && Array.isArray(result.elements)) {
+      return result.elements as InteractiveElement[];
+    }
+    return [];
   }
 
   async close(): Promise<void> {
     if (!this.sessionId) return;
-    await this.post("/close", { session_id: this.sessionId }).catch(() => {});
+    try {
+      await this.post("/close", { session_id: this.sessionId });
+    } catch (err) {
+      console.warn(`[lightpanda] Close session error:`, err instanceof Error ? err.message : String(err));
+    }
     this.sessionId = null;
   }
 }

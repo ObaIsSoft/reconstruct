@@ -54,7 +54,7 @@ export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 export type ReconstructConfig = z.infer<typeof ReconstructConfigSchema>;
 
 // Deep partial — allows passing { crawl: { max_pages: 10 } } without all fields
-type DeepPartial<T> = T extends object
+export type DeepPartial<T> = T extends object
   ? { [K in keyof T]?: DeepPartial<T[K]> }
   : T;
 
@@ -152,7 +152,29 @@ export function loadConfig(overrides?: DeepPartial<ReconstructConfig>): Reconstr
   }
 
   _config = result.data;
+  validateScraperConfig(_config);
   return _config;
+}
+
+// Validate scraper configuration — warn about missing API keys
+function validateScraperConfig(config: ReconstructConfig): void {
+  const prefer = config.scrapers?.prefer;
+  const preferArray = Array.isArray(prefer) ? prefer : prefer ? [prefer] : [];
+  const warnings: string[] = [];
+
+  if (preferArray.includes("firecrawl") && !config.scrapers?.firecrawl_api_key) {
+    warnings.push("FIRECRAWL_API_KEY");
+  }
+  if (preferArray.includes("browserbase") && !config.scrapers?.browserbase_api_key) {
+    warnings.push("BROWSERBASE_API_KEY");
+  }
+  if (preferArray.includes("lightpanda") && !config.scrapers?.lightpanda_url) {
+    warnings.push("LIGHTPANDA_URL");
+  }
+
+  if (warnings.length > 0) {
+    console.warn(`[reconstruct] Warning: Configured scrapers (${preferArray.join(", ")}) but missing API keys/URLs: ${warnings.join(", ")}`);
+  }
 }
 
 // Reset cache (used in tests or after init)

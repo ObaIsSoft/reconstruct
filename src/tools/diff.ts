@@ -217,7 +217,7 @@ function buildDiffReport(
 
   if (totalChanges === 0) {
     lines.push("## Summary");
-    lines.push("No significant changes detected between the archived snapshot and current state.");
+    lines.push("The page appears unchanged - no significant differences detected between the archived snapshot and current state.");
   } else {
     lines.push("## Summary");
     lines.push(

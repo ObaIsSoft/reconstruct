@@ -58,10 +58,14 @@ export class BrowserbaseClient {
   }
 
   private async del(path: string): Promise<void> {
-    await fetch(`${this.baseUrl}${path}`, {
-      method: "DELETE",
-      headers: this.headers,
-    }).catch(() => {});
+    try {
+      await fetch(`${this.baseUrl}${path}`, {
+        method: "DELETE",
+        headers: this.headers,
+      });
+    } catch (err) {
+      console.warn(`[browserbase] DELETE ${path} error:`, err instanceof Error ? err.message : String(err));
+    }
   }
 
   // Create a session and return its ID + connect URL

@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { loadConfig } from "../schema/config.js";
+import { loadConfig, type DeepPartial, type ReconstructConfig } from "../schema/config.js";
 import { readCache, writeCache } from "../cache/store.js";
 import { crawlSite } from "../scrapers/cascade.js";
 import { mergeCrawlToSchema } from "../extractors/merge.js";
@@ -16,10 +16,10 @@ export function registerCannibalizeTool(server: McpServer): void {
     {
       sources: z.array(z.object({
         url: z.string().url().describe("Source website URL"),
-        take: z.array(z.enum([
-          "colors", "typography", "spacing", "motion", "components",
-          "layout", "interactions", "philosophy", "elevation", "all"
-        ])).describe("What design elements to take from this source"),
+      take: z.array(z.enum([
+        "colors", "typography", "spacing", "motion", "components",
+        "layout", "interactions", "philosophy", "elevation", "border_radius", "all"
+      ])).describe("What design elements to take from this source"),
       })).min(1).max(6).describe("Source websites and what to take from each"),
       intent: z.string().min(10).describe(
         "Creative direction for the synthesis. E.g. 'A dashboard that feels like Linear but breathes like Notion, with Vercel's deployment card animations'"
@@ -41,8 +41,7 @@ export function registerCannibalizeTool(server: McpServer): void {
 
         if (!schema) {
           try {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const crawl = await crawlSite(source.url, { crawl: { max_pages: 10 } } as any);
+            const crawl = await crawlSite(source.url, { crawl: { max_pages: 10 } } as DeepPartial<ReconstructConfig>);
             schema = await mergeCrawlToSchema(source.url, crawl);
             writeCache(source.url, schema, cacheDir, config.output.cache_ttl_hours);
           } catch (err) {
@@ -263,7 +262,7 @@ function synthesize(
     }
 
     // Border radius
-    if (takeAll || take.includes("elevation")) {
+    if (takeAll || take.includes("border_radius")) {
       if (!spec.border_radius && schema.design.border_radius.length > 0) {
         spec.border_radius = { value: schema.design.border_radius, source_url: url, rationale: `radius scale: ${schema.design.border_radius.join(", ")}px` };
       }

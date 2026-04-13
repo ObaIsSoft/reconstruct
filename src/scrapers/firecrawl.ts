@@ -1,6 +1,24 @@
 // Firecrawl scraper — full site crawl, multi-page markdown extraction
 // Docs: https://docs.firecrawl.dev
 
+type FirecrawlRecord = Record<string, unknown>;
+
+function isFirecrawlRecord(obj: unknown): obj is FirecrawlRecord {
+  return obj !== null && typeof obj === "object";
+}
+
+function isScrapeResponse(obj: unknown): obj is {
+  success: boolean;
+  data?: {
+    markdown?: string;
+    html?: string;
+    metadata?: Record<string, unknown>;
+    links?: string[];
+  };
+} {
+  return isFirecrawlRecord(obj);
+}
+
 export interface FirecrawlPage {
   url: string;
   markdown: string;
@@ -79,15 +97,23 @@ export class FirecrawlClient {
         body.headers = { Cookie: cookies };
       }
 
-      const data = await this.post<{
-        success: boolean;
-        data?: {
-          markdown?: string;
-          html?: string;
-          metadata?: Record<string, unknown>;
-          links?: string[];
+      const raw = await this.post<unknown>("/v1/scrape", body);
+      const data = isScrapeResponse(raw) ? raw : null;
+
+      if (!data || !data.success) {
+        return {
+          success: false,
+          page: {
+            url,
+            markdown: "",
+            html: "",
+            title: "",
+            links: [],
+            metadata: {},
+          },
+          error: "Firecrawl request failed",
         };
-      }>("/v1/scrape", body);
+      }
 
       return {
         success: data.success,
@@ -96,7 +122,9 @@ export class FirecrawlClient {
           markdown: data.data?.markdown ?? "",
           html: data.data?.html ?? "",
           title: String(data.data?.metadata?.["title"] ?? ""),
-          links: (data.data?.links ?? []) as string[],
+          links: Array.isArray(data.data?.links) 
+            ? data.data.links.filter((l): l is string => typeof l === "string")
+            : [],
           metadata: {
             description: String(data.data?.metadata?.["description"] ?? ""),
             og_image: String(data.data?.metadata?.["ogImage"] ?? ""),
@@ -187,7 +215,9 @@ export class FirecrawlClient {
           markdown: item.markdown ?? "",
           html: item.html ?? "",
           title: String(item.metadata?.["title"] ?? ""),
-          links: (item.links ?? []) as string[],
+          links: Array.isArray(item.links) 
+            ? item.links.filter((l): l is string => typeof l === "string")
+            : [],
           metadata: {
             description: String(item.metadata?.["description"] ?? ""),
             og_image: String(item.metadata?.["ogImage"] ?? ""),

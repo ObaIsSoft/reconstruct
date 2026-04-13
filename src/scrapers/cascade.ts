@@ -97,6 +97,37 @@ export interface CascadePage {
 
 // ── Single-page cascade ───────────────────────────────────────────────────────
 
+// Result wrapper for error isolation
+type ScraperResult<T> = 
+  | { ok: true; data: T }
+  | { ok: false; error: string };
+
+async function tryScraper<T>(
+  name: string,
+  fn: () => Promise<T>,
+  timeoutMs?: number
+): Promise<ScraperResult<T>> {
+  try {
+    const controller = timeoutMs ? new AbortController() : null;
+    const timeout = timeoutMs 
+      ? setTimeout(() => controller?.abort(), timeoutMs) 
+      : null;
+    
+    try {
+      const data = await fn();
+      if (timeout) clearTimeout(timeout);
+      return { ok: true, data };
+    } catch (err) {
+      if (timeout) clearTimeout(timeout);
+      throw err;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[cascade] ${name} failed: ${msg}`);
+    return { ok: false, error: msg };
+  }
+}
+
 export async function scrapeSinglePage(
   url: string,
   config: ReconstructConfig,
@@ -124,14 +155,24 @@ export async function scrapeSinglePage(
     if (!config.scrapers.browserbase_api_key) {
       return emptyCascadePage(url, "browserbase", "Browserbase API key not configured");
     }
-    const bb: BrowserbasePage = await scrapeWithBrowserbase(url, {
-      apiKey: config.scrapers.browserbase_api_key,
-      projectId: config.scrapers.browserbase_project_id,
-      cookies,
-      capture_network: true,
-      timeout_ms: config.crawl.timeout_per_page,
-    });
 
+    const bbResult = await tryScraper(
+      "browserbase",
+      () => scrapeWithBrowserbase(url, {
+        apiKey: config.scrapers.browserbase_api_key,
+        projectId: config.scrapers.browserbase_project_id,
+        cookies,
+        capture_network: true,
+        timeout_ms: config.crawl.timeout_per_page,
+      }),
+      config.crawl.timeout_per_page
+    );
+
+    if (!bbResult.ok) {
+      return emptyCascadePage(url, "browserbase", bbResult.error);
+    }
+
+    const bb = bbResult.data;
     const stylesheetUrls = extractStylesheetUrls(bb.html, url);
     const cssText = await fetchStylesheets(stylesheetUrls, cookies);
 
@@ -155,16 +196,26 @@ export async function scrapeSinglePage(
     };
   }
 
-  if (needsBrowser && (prefer as string) !== "firecrawl") {
+  const preferStr = prefer as string;
+  if (needsBrowser && preferStr !== "firecrawl" && preferStr !== "browserbase") {
     // Lightpanda
-    const lp: LightpandaPage = await scrapePage(url, {
-      lightpanda_url: config.scrapers.lightpanda_url,
-      cookies,
-      trigger_interactions: config.crawl.trigger_interactions,
-      scroll_to_load: config.crawl.scroll_to_load,
-      timeout_ms: config.crawl.timeout_per_page,
-    });
+    const lpResult = await tryScraper(
+      "lightpanda",
+      () => scrapePage(url, {
+        lightpanda_url: config.scrapers.lightpanda_url,
+        cookies,
+        trigger_interactions: config.crawl.trigger_interactions,
+        scroll_to_load: config.crawl.scroll_to_load,
+        timeout_ms: config.crawl.timeout_per_page,
+      }),
+      config.crawl.timeout_per_page
+    );
 
+    if (!lpResult.ok) {
+      return emptyCascadePage(url, "lightpanda", lpResult.error);
+    }
+
+    const lp = lpResult.data;
     const cssText = await fetchStylesheets(lp.stylesheet_urls, cookies);
 
     return {
@@ -191,11 +242,24 @@ export async function scrapeSinglePage(
     if (!config.scrapers.firecrawl_api_key) {
       return emptyCascadePage(url, "firecrawl", "Firecrawl API key not configured");
     }
-    const fc = createFirecrawlClient(
-      config.scrapers.firecrawl_api_key,
-      config.scrapers.firecrawl_api_url
+
+    const fcResult = await tryScraper(
+      "firecrawl",
+      async () => {
+        const fc = createFirecrawlClient(
+          config.scrapers.firecrawl_api_key,
+          config.scrapers.firecrawl_api_url
+        );
+        return fc.scrape(url, cookies);
+      },
+      config.crawl.timeout_per_page
     );
-    const result = await fc.scrape(url, cookies);
+
+    if (!fcResult.ok) {
+      return emptyCascadePage(url, "firecrawl", fcResult.error);
+    }
+
+    const result = fcResult.data;
     const stylesheetUrls = extractStylesheetUrls(result.page.html, url);
     const cssText = await fetchStylesheets(stylesheetUrls, cookies);
 
