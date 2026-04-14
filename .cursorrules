@@ -1,0 +1,34 @@
+# Reconstruct: AI-Native Website Deconstruction
+
+You are working on **Reconstruct**, an open-source Model Context Protocol (MCP) server that deconstructs, explains, and recreates website architectures.
+
+## Project Vision
+- **Goal**: Deconstruct any website to understand its design system, layout, and logic.
+- **Philosophy**: Indie-hacker, lean, BYOK (Bring Your Own Key).
+- **Core Workflow**: `analyze` (crawler) -> `cache` -> `explain` (semantic) / `clone` (generation).
+
+## Tech Stack
+- **Runtime**: Node.js (v20+)
+- **Language**: TypeScript (Strict mode)
+- **Module System**: ESM (Use `.js` extensions in imports)
+- **Validation**: Zod (Every input/output and schema must be validated)
+- **SDK**: Model Context Protocol (MCP) SDK
+
+## Architecture Guidelines
+- **Tools**: Each tool lives in `src/tools/`. They must be self-contained and registered in `src/index.ts`.
+- **Pipeline**:
+    1. `reconstruct_analyze`: Scrapes/Parses a site. Must populate `.reconstruct/cache`.
+    2. `reconstruct_explain`: Provides a high-level architectural walkthrough.
+    3. `reconstruct_clone`: Generates codebases (React, Vue, HTML, etc.).
+- **Scrapers**: Supports cascading logic between WebFetch, Lightpanda, Firecrawl, and Browserbase.
+- **Config**: Always use `loadConfig()` from `src/schema/config.ts`. Do not hardcode API keys.
+
+## Coding Standards
+- **ESM-Only**: Use `import { x } from "./file.js";`.
+- **Async/Await**: Prefer `async/await` over raw promises.
+- **Error Handling**: Tools should return `content: [{ type: "text", text: "error message" }], isError: true` on failure.
+- **Documentation**: Use JSDoc for complex logic or parsers.
+
+## Common Tasks
+- **Adding a Tool**: Create `src/tools/name.ts`, export `registerNameTool(server)`, and call it in `src/index.ts`.
+- **Updating Schema**: Modify `src/schema/types.ts` and sync with `src/schema/config.ts` if needed.
