@@ -52,34 +52,47 @@ function inferColorUsage(context: string): ColorUsage {
   return "unknown";
 }
 
+function hexToHSL(hex: string): { h: number; s: number; l: number } {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return { h: 0, s: 0, l: Math.round(l * 100) };
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
+}
+
 function inferColorName(hex: string, usage: ColorUsage, index: number): string {
-  const hue = parseInt(hex.slice(1, 3), 16);
-  const saturation = parseInt(hex.slice(3, 5), 16);
-  const brightness = parseInt(hex.slice(5, 7), 16);
-  const avg = (parseInt(hex.slice(1, 3), 16) + saturation + brightness) / 3;
+  if (hex.length !== 7) return `${usage}-${index}`;
+  const { h, s, l } = hexToHSL(hex);
 
-  // Near-white / near-black
-  if (avg > 230) return "white";
-  if (avg < 30) return "black";
-  if (avg > 180 && saturation < 30) return `gray-${Math.round((255 - avg) / 25) * 100}`;
+  if (l > 90) return "white";
+  if (l < 10) return "black";
+  if (s < 15) return `gray-${Math.round((100 - l) / 10) * 100}`;
 
-  // Hue-based naming
-  if (hue < 30) return `red-${index}`;
-  if (hue < 60) return `orange-${index}`;
-  if (hue < 90) return `yellow-${index}`;
-  if (hue < 150) return `green-${index}`;
-  if (hue < 200) return `teal-${index}`;
-  if (hue < 260) return `blue-${index}`;
-  if (hue < 290) return `purple-${index}`;
-  if (hue < 330) return `pink-${index}`;
+  if (h < 15 || h >= 345) return `red-${index}`;
+  if (h < 45) return `orange-${index}`;
+  if (h < 75) return `yellow-${index}`;
+  if (h < 150) return `green-${index}`;
+  if (h < 195) return `teal-${index}`;
+  if (h < 255) return `blue-${index}`;
+  if (h < 285) return `purple-${index}`;
+  if (h < 345) return `pink-${index}`;
   return `${usage}-${index}`;
 }
 
-export function extractColors(cssTexts: string[]): ColorToken[] {
+export function extractColors(cssTexts: string[], fallbackContext?: string): ColorToken[] {
   const full = cssTexts.join("\n");
   const counts = new Map<string, { count: number; contexts: string[] }>();
-
-  // Process rule blocks to capture property context
+  
+  // Primary: From CSS Rules
   const ruleRe = /([^{}]+)\{([^}]+)\}/g;
   let match: RegExpExecArray | null;
 
@@ -94,19 +107,36 @@ export function extractColors(cssTexts: string[]): ColorToken[] {
       counts.set(colorHex, existing);
     };
 
-    // Hex
     for (const hm of block.matchAll(HEX_RE)) {
-      if (hm[1].length === 3 || hm[1].length === 6) {
+      if (hm[1].length === 3 || hm[1].length === 6 || hm[1].length === 8) {
         extractFromBlock(`#${normalizeHex(hm[1])}`);
       }
     }
-    // RGB
     for (const rm of block.matchAll(RGB_RE)) {
       extractFromBlock(rgbToHex(+rm[1], +rm[2], +rm[3]));
     }
-    // HSL
     for (const hm of block.matchAll(HSL_RE)) {
       extractFromBlock(hslToHex(+hm[1], +hm[2], +hm[3]));
+    }
+  }
+
+  // GLOBAL FALLBACK SNIFFER: If CSS rules are empty or insufficient,
+  // scan the entire fallback context (raw HTML/Markdown) for color signatures.
+  if (counts.size < 3 && fallbackContext && fallbackContext.length > 0) {
+    for (const hm of fallbackContext.matchAll(HEX_RE)) {
+      if (hm[1].length === 3 || hm[1].length === 6 || hm[1].length === 8) {
+        const hex = `#${normalizeHex(hm[1])}`;
+        const existing = counts.get(hex) ?? { count: 0, contexts: [] };
+        existing.count++;
+        counts.set(hex, existing);
+      }
+    }
+    // Sniff common RGB/HSL text patterns
+    for (const rm of fallbackContext.matchAll(/rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)/gi)) {
+      const hex = rgbToHex(+rm[1], +rm[2], +rm[3]);
+      const existing = counts.get(hex) ?? { count: 0, contexts: [] };
+      existing.count++;
+      counts.set(hex, existing);
     }
   }
 
@@ -148,25 +178,30 @@ function inferFontSource(family: string, cssText: string): FontSource {
   return "cdn";
 }
 
-export function extractTypography(cssTexts: string[]): {
+export interface TypographySchema {
   families: FontToken[];
   scale: number[];
   base_size: number;
   line_height_base: number;
   letter_spacing_pattern: string;
-} {
+}
+
+export function extractTypography(cssTexts: string[], fallbackContext?: string): TypographySchema {
   const full = cssTexts.join("\n");
-  const familyMap = new Map<string, { selectors: string[]; weights: Set<number> }>();
+  const analysisContext = full.length > 50 ? full : (fallbackContext ?? "");
+  
+  const familyMap = new Map<string, { weights: Set<number>, selectors: string[] }>();
   const sizes = new Set<number>();
   const lineHeights: number[] = [];
   const letterSpacings: string[] = [];
 
+  // Rules: [selector] { [block] }
   const ruleRe = /([^{}]+)\{([^}]+)\}/g;
-  let m: RegExpExecArray | null;
+  let match: RegExpExecArray | null;
 
-  while ((m = ruleRe.exec(full)) !== null) {
-    const selector = m[1].trim();
-    const block = m[2];
+  while ((match = ruleRe.exec(analysisContext)) !== null) {
+    const selector = match[1] ?? "";
+    const block = match[2] ?? "";
 
     // font-family
     const ffMatch = block.match(/font-family\s*:\s*([^;]+)/i);
@@ -457,24 +492,32 @@ export function detectColorStrategy(
 
 export interface CSSTokens {
   colors: ColorToken[];
-  color_strategy: ReturnType<typeof detectColorStrategy>;
+  color_strategy: "monochrome" | "analogous" | "complementary" | "triadic" | "unknown";
   dark_mode: boolean;
-  typography: ReturnType<typeof extractTypography>;
+  typography: TypographySchema;
   spacing: ReturnType<typeof extractSpacing>;
   elevation: ShadowToken[];
   border_radius: number[];
   motion: ReturnType<typeof extractMotion>;
 }
 
-export function extractCSSTokens(cssTexts: string[]): CSSTokens {
-  const colors = extractColors(cssTexts);
-  const full = cssTexts.join("\n");
+export function extractCSSTokens(cssTexts: string[], rawContext?: string): CSSTokens {
+  const allCss = cssTexts.join("\n");
+  const analysisContext = allCss.length > 0 ? allCss : (rawContext ?? "");
+  
+  console.log(`[Reconstruct] Extracting tokens from ${cssTexts.length} CSS blocks (Total chars: ${allCss.length})`);
+  if (allCss.length === 0 && analysisContext.length > 0) {
+    console.log(`[Reconstruct] Low-fidelity fallback: Sniffing Design DNA from raw context (${analysisContext.length} chars)`);
+  }
+
+  const colors = extractColors(cssTexts, analysisContext);
+  const typography = extractTypography(cssTexts, analysisContext);
 
   return {
     colors,
     color_strategy: detectColorStrategy(colors),
-    dark_mode: full.includes("prefers-color-scheme") || full.includes("dark:"),
-    typography: extractTypography(cssTexts),
+    dark_mode: analysisContext.includes("prefers-color-scheme") || analysisContext.includes("dark:"),
+    typography,
     spacing: extractSpacing(cssTexts),
     elevation: extractElevation(cssTexts),
     border_radius: extractBorderRadius(cssTexts),

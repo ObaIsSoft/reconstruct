@@ -5,11 +5,14 @@
 export interface LightpandaPage {
   url: string;
   title: string;
+  html: string;
+  markdown: string;
   semantic_tree: string;
   interactive_elements: InteractiveElement[];
   shadow_roots: ShadowRoot[];
   stylesheet_urls: string[];
   inline_styles: string[];
+  css_text: string[];        // captured directly from document.styleSheets
   links: PageLink[];
   nav_links: PageLink[];
   footer_links: PageLink[];
@@ -68,6 +71,7 @@ export class LightpandaClient {
     const result = await this.post("/navigate", {
       url,
       cookies: cookies ?? "",
+      user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     });
     if (isRecord(result) && typeof result.session_id === "string") {
       this.sessionId = result.session_id;
@@ -202,6 +206,24 @@ const SCRIPTS = {
     })()
   `,
 
+  html: `document.documentElement.outerHTML`,
+
+  cssRules: `
+    (function() {
+      const rules = [];
+      const sheets = Array.from(document.styleSheets);
+      for (const sheet of sheets) {
+        try {
+          const sheetRules = Array.from(sheet.cssRules || []).map(r => r.cssText);
+          rules.push(...sheetRules);
+        } catch (e) {
+          // CORS blocked, fallback to Node-side URL fetch
+        }
+      }
+      return JSON.stringify(rules);
+    })()
+  `,
+
   expandInteractions: `
     (function() {
       // Click all disclosure buttons (accordions, tabs, dropdowns)
@@ -246,8 +268,10 @@ export async function scrapePage(
 
     // Parallel extraction after page is ready
     const [
+      html,
       stylesheetUrlsRaw,
       inlineStylesRaw,
+      cssRulesRaw,
       shadowRootsRaw,
       allLinksRaw,
       navLinksRaw,
@@ -255,8 +279,10 @@ export async function scrapePage(
       semanticTree,
       interactiveElements,
     ] = await Promise.all([
+      client.evaluate(SCRIPTS.html),
       client.evaluate(SCRIPTS.stylesheetUrls),
       client.evaluate(SCRIPTS.inlineStyles),
+      client.evaluate(SCRIPTS.cssRules),
       client.evaluate(SCRIPTS.shadowRoots),
       client.evaluate(SCRIPTS.allLinks),
       client.evaluate(SCRIPTS.navLinks),
@@ -275,11 +301,14 @@ export async function scrapePage(
     return {
       url,
       title,
+      html,
+      markdown: "", // Lightpanda doesn't natively do MD, but cascade.js can convert if needed
       semantic_tree: semanticTree,
       interactive_elements: interactiveElements,
       shadow_roots: parse<ShadowRoot[]>(shadowRootsRaw, []),
       stylesheet_urls: parse<string[]>(stylesheetUrlsRaw, []),
       inline_styles: parse<string[]>(inlineStylesRaw, []),
+      css_text: parse<string[]>(cssRulesRaw, []),
       links: parse<PageLink[]>(allLinksRaw, []),
       nav_links: parse<PageLink[]>(navLinksRaw, []),
       footer_links: parse<PageLink[]>(footerLinksRaw, []),
@@ -289,11 +318,14 @@ export async function scrapePage(
     return {
       url,
       title: "",
+      html: "",
+      markdown: "",
       semantic_tree: "",
       interactive_elements: [],
       shadow_roots: [],
       stylesheet_urls: [],
       inline_styles: [],
+      css_text: [],
       links: [],
       nav_links: [],
       footer_links: [],

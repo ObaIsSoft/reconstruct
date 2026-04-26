@@ -3,6 +3,8 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import { CreateMessageRequestSchema, CreateMessageResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, type DeepPartial, type ReconstructConfig } from "../schema/config.js";
 import { readCache, writeCache } from "../cache/store.js";
 import { crawlSite } from "../scrapers/cascade.js";
@@ -29,7 +31,7 @@ export function registerCannibalizeTool(server: McpServer): void {
         "Any constraints to apply. E.g. 'must be dark mode first', 'no animations', 'accessibility AA required'"
       ),
     },
-    async ({ sources, intent, output_framework, constraints }) => {
+    async ({ sources, intent, output_framework, constraints }, extra) => {
       const config = loadConfig();
       const cacheDir = config.output.cache_dir;
 
@@ -58,7 +60,7 @@ export function registerCannibalizeTool(server: McpServer): void {
         schemas.push({ url: source.url, take: source.take, schema });
       }
 
-      const output = buildCannibalizeOutput(schemas, intent, output_framework, constraints);
+      const output = await buildCannibalizeOutput(extra, schemas, intent, output_framework, constraints);
 
       return {
         content: [{ type: "text", text: output }],
@@ -85,15 +87,19 @@ interface CannibalizedSpec {
   layout: SourcedToken | null;
   philosophy: SourcedToken[];
   conflicts: Array<{ property: string; options: string[]; resolution: string }>;
+  ai_strategy?: string;
+  ai_rationale?: string;
 }
 
-function buildCannibalizeOutput(
+async function buildCannibalizeOutput(
+  extra: RequestHandlerExtra<any, any>,
   sources: Array<{ url: string; take: string[]; schema: ReconstructSchema }>,
   intent: string,
   framework: string,
   constraints?: string
-): string {
-  const spec = synthesize(sources);
+): Promise<string> {
+  // Use AI if possible, else fallback to rule-based
+  const spec = await synthesizeWithAI(extra, sources, intent, constraints);
   const lines: string[] = [];
 
   lines.push(`# Cannibalized Design Spec`);
@@ -182,14 +188,119 @@ function buildCannibalizeOutput(
 
   // Creative synthesis brief
   lines.push("## Creative Brief");
+  if (spec.ai_strategy) {
+    lines.push(`### Synthesis Strategy (AI)`);
+    lines.push(spec.ai_strategy);
+    lines.push("");
+  }
   lines.push(buildCreativeBrief(sources, spec, intent, constraints));
   lines.push("");
+  
+  if (spec.ai_rationale) {
+    lines.push(`### Implementation Rationale (AI)`);
+    lines.push(spec.ai_rationale);
+    lines.push("");
+  }
 
   // Component scaffold
   lines.push("## Component Scaffold");
   lines.push(buildCannibalizedComponent(spec, framework, intent));
 
   return lines.join("\n");
+}
+
+async function synthesizeWithAI(
+    extra: RequestHandlerExtra<any, any>,
+    sources: Array<{ url: string; take: string[]; schema: ReconstructSchema }>,
+    intent: string,
+    constraints?: string
+): Promise<CannibalizedSpec> {
+    const baseline = synthesize(sources);
+
+    try {
+        const dnaSummary = sources.map(s => {
+            return `Source: ${s.url}\nTech: ${s.schema.technology.framework}, ${s.schema.technology.styling.join(", ")}\n` +
+                   `Colors: ${s.schema.design.colors.palette.map(p => p.value).join(", ")}\n` +
+                   `Typography: ${s.schema.design.typography.families.map(f => f.family).join(", ")}\n` +
+                   `Personality: ${s.schema.philosophy.personality.join(", ")}`;
+        }).join("\n\n---\n\n");
+
+        const prompt = `You are the Reconstruct Design Synthesis Architect. Your task is to perform a cross-site design cannibalization.
+
+# Input DNA Manifest:
+${dnaSummary}
+
+# User's Creative Intent:
+${intent}
+
+# Constraints:
+${constraints || "None"}
+
+# Existing Baseline Choice:
+${JSON.stringify({ 
+    colors: baseline.colors.map(c => c.value), 
+    spacing: baseline.spacing?.value,
+    philosophy: baseline.philosophy.map(p => p.value)
+}, null, 2)}
+
+# Objective:
+Return a sophisticated, reasoned design spec. Resolve conflicts based on the intent.
+
+# Requirements:
+1. Explain your strategy (why this blend works).
+2. For each major decision (primary color, typography, radius), provide a rationale linked back to a source's DNA.
+3. Return the result in the following JSON format ONLY:
+{
+  "strategy": "...",
+  "rationale": "...",
+  "spec": {
+      "colors": [{"value": "#...", "source_url": "...", "rationale": "..."}],
+      "typography": [{"value": "...", "source_url": "...", "rationale": "..."}],
+      "spacing_base": 4,
+      "border_radius": 8
+  }
+}`;
+
+        const response = await extra.sendRequest(
+            {
+                method: "sampling/createMessage",
+                params: {
+                    messages: [{
+                        role: "user",
+                        content: {
+                            type: "text",
+                            text: prompt
+                        }
+                    }],
+                    systemPrompt: "You are the Reconstruct Design Synthesis Engine. Your job is to resolve design conflicts between multiple source sites and output a unified, premium design specification. You must return ONLY valid JSON matching the schema.",
+                    maxTokens: 4000
+                }
+            } as any,
+            CreateMessageResultSchema
+        );
+
+        if (response.content && "text" in response.content) {
+            const raw = response.content.text;
+            // Handle markdown code blocks if the AI includes them
+            const jsonMatch = raw.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                try {
+                    const ai = JSON.parse(jsonMatch[0]);
+                    return {
+                        ...baseline,
+                        ai_strategy: ai.strategy,
+                        ai_rationale: ai.rationale,
+                    };
+                } catch (e) {
+                    console.error("[cannibalize] JSON parse failed:", e);
+                }
+            }
+        }
+    } catch (err) {
+        console.error("[cannibalize] AI synthesis failed, falling back to rules:", err);
+    }
+
+    return baseline;
 }
 
 function synthesize(

@@ -18,12 +18,16 @@ export const CrawlConfigSchema = z.object({
 
 export const ScraperConfigSchema = z.object({
   // "auto" = cascade logic picks the right tool
-  prefer: z.enum(["auto", "webfetch", "lightpanda", "firecrawl", "browserbase"]).default("auto"),
+  prefer: z.enum(["auto", "webfetch", "jina", "lightpanda", "firecrawl", "browserbase", "crawl4ai"]).default("auto"),
+  jina_enabled: z.boolean().default(true),
+  jina_api_key: z.string().default(""),
   lightpanda_url: z.string().url().default("http://localhost:9222"),
   firecrawl_api_key: z.string().default(""),
   firecrawl_api_url: z.string().url().default("https://api.firecrawl.dev"),
   browserbase_api_key: z.string().default(""),
   browserbase_project_id: z.string().default(""),
+  local_setup_complete: z.boolean().default(false),
+  crawl4ai_venv_path: z.string().optional(),
 });
 
 export const OutputConfigSchema = z.object({
@@ -57,22 +61,6 @@ export type ScraperConfig = z.infer<typeof ScraperConfigSchema>;
 export type OutputConfig = z.infer<typeof OutputConfigSchema>;
 export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 export type ReconstructConfig = z.infer<typeof ReconstructConfigSchema>;
-
-// Helper to get config with defaults
-function withDefaults(config: ReconstructConfig): ReconstructConfig {
-  return {
-    _note: config._note,
-    crawl: { ...CrawlConfigSchema.parse({}), ...config.crawl },
-    scrapers: { ...ScraperConfigSchema.parse({}), ...config.scrapers },
-    output: { ...OutputConfigSchema.parse({}), ...config.output },
-    auth: { ...AuthConfigSchema.parse({}), ...config.auth },
-  };
-}
-
-// Public function to get config with all defaults applied (used by callers)
-export function getResolvedConfig(config: ReconstructConfig): ReconstructConfig {
-  return withDefaults(config);
-}
 
 // Deep partial — allows passing { crawl: { max_pages: 10 } } without all fields
 export type DeepPartial<T> = T extends object
@@ -124,6 +112,7 @@ export function loadConfig(overrides?: DeepPartial<ReconstructConfig>): Reconstr
   if (process.env.BROWSERBASE_API_KEY)    envOverrides.browserbase_api_key    = process.env.BROWSERBASE_API_KEY;
   if (process.env.BROWSERBASE_PROJECT_ID) envOverrides.browserbase_project_id = process.env.BROWSERBASE_PROJECT_ID;
   if (process.env.LIGHTPANDA_URL)         envOverrides.lightpanda_url         = process.env.LIGHTPANDA_URL;
+  if (process.env.JINA_API_KEY)           envOverrides.jina_api_key           = process.env.JINA_API_KEY;
   if (process.env.RECONSTRUCT_PREFER)     envOverrides.prefer                 = process.env.RECONSTRUCT_PREFER;
   if (process.env.RECONSTRUCT_MAX_PAGES)  envOverrides.max_pages              = parseInt(process.env.RECONSTRUCT_MAX_PAGES, 10);
   if (process.env.RECONSTRUCT_CACHE_DIR)  envOverrides.cache_dir              = process.env.RECONSTRUCT_CACHE_DIR;
@@ -132,7 +121,7 @@ export function loadConfig(overrides?: DeepPartial<ReconstructConfig>): Reconstr
   // env vars sit above file config but below explicit call-level overrides
   const scraperEnv = Object.fromEntries(
     Object.entries(envOverrides).filter(([k]) =>
-      ["firecrawl_api_key","firecrawl_api_url","browserbase_api_key","browserbase_project_id","lightpanda_url","prefer"].includes(k)
+      ["firecrawl_api_key","firecrawl_api_url","browserbase_api_key","browserbase_project_id","lightpanda_url","jina_api_key","prefer"].includes(k)
     )
   );
   const crawlEnv = Object.fromEntries(
@@ -179,22 +168,21 @@ export function loadConfig(overrides?: DeepPartial<ReconstructConfig>): Reconstr
 
 // Validate scraper configuration — warn about missing API keys
 function validateScraperConfig(config: ReconstructConfig): void {
-  const prefer = config.scrapers?.prefer;
-  const preferArray = Array.isArray(prefer) ? prefer : prefer ? [prefer] : [];
+  const prefer = config.scrapers.prefer;
   const warnings: string[] = [];
 
-  if (preferArray.includes("firecrawl") && !config.scrapers?.firecrawl_api_key) {
+  if (prefer === "firecrawl" && !config.scrapers.firecrawl_api_key) {
     warnings.push("FIRECRAWL_API_KEY");
   }
-  if (preferArray.includes("browserbase") && !config.scrapers?.browserbase_api_key) {
+  if (prefer === "browserbase" && !config.scrapers.browserbase_api_key) {
     warnings.push("BROWSERBASE_API_KEY");
   }
-  if (preferArray.includes("lightpanda") && !config.scrapers?.lightpanda_url) {
+  if (prefer === "lightpanda" && !config.scrapers.lightpanda_url) {
     warnings.push("LIGHTPANDA_URL");
   }
 
   if (warnings.length > 0) {
-    console.warn(`[reconstruct] Warning: Configured scrapers (${preferArray.join(", ")}) but missing API keys/URLs: ${warnings.join(", ")}`);
+    console.warn(`[reconstruct] Warning: prefer=${prefer} configured but missing: ${warnings.join(", ")}`);
   }
 }
 

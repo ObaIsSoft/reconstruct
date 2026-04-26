@@ -50,20 +50,29 @@ function mergeNavLinks(
 // ── CSS aggregation ───────────────────────────────────────────────────────────
 
 function aggregateCss(pages: CascadePage[]): string[] {
-  // Deduplicate stylesheet URLs and merge all CSS
-  const seenUrls = new Set<string>();
+  const seenContent = new Set<string>();
   const cssTexts: string[] = [];
 
   for (const page of pages) {
-    for (let i = 0; i < page.stylesheet_urls.length; i++) {
-      const url = page.stylesheet_urls[i];
-      if (!seenUrls.has(url)) {
-        seenUrls.add(url);
-        if (page.css_text[i]) cssTexts.push(page.css_text[i]);
+    // 1. Process explicit CSS text from the scraper (e.g. captured browser rules)
+    for (const css of page.css_text) {
+      if (!css) continue;
+      const hash = css.trim().slice(0, 1000); // 1000 chars for safe dedupe
+      if (!seenContent.has(hash)) {
+        seenContent.add(hash);
+        cssTexts.push(css);
       }
     }
-    // Always include inline styles
-    cssTexts.push(...page.inline_styles);
+
+    // 2. Process inline styles
+    for (const css of page.inline_styles) {
+      if (!css) continue;
+      const hash = css.trim().slice(0, 500);
+      if (!seenContent.has(hash)) {
+        seenContent.add(hash);
+        cssTexts.push(css);
+      }
+    }
   }
 
   return cssTexts.filter(Boolean);
@@ -121,7 +130,7 @@ export async function mergeCrawlToSchema(
   const baseHostname = new URL(startUrl).hostname;
 
   // Run all extractors
-  const cssTokens = extractCSSTokens(allCss);
+  const cssTokens = extractCSSTokens(allCss, homePage.html);
   const techStack = detectTechStack(homePage.html, allCss);
   const interactions = extractInteractions(allCss, homePage.html);
   const grid = detectGridSystem(homePage.html, allCss);

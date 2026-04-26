@@ -40,6 +40,18 @@ npx reconstruct-mcp init
 
 Creates `reconstruct.config.json` with all defaults and comments.
 
+### Local High-Power Setup (Optional)
+
+To enable high-fidelity scraping for complex JS-heavy sites without using paid APIs:
+
+```bash
+npm run setup
+```
+
+**Requirements:**
+- Python 3.10+
+- ~500MB disk space (for Crawl4AI and Chromium)
+
 ## Configuration
 
 `reconstruct.config.json` (project root) or `~/.reconstruct/config.json` (global):
@@ -54,6 +66,8 @@ Creates `reconstruct.config.json` with all defaults and comments.
   },
   "scrapers": {
     "prefer": "auto",
+    "jina_enabled": true,
+    "jina_api_key": "",
     "lightpanda_url": "http://localhost:9222",
     "firecrawl_api_key": "",
     "browserbase_api_key": "",
@@ -74,10 +88,12 @@ Creates `reconstruct.config.json` with all defaults and comments.
 
 **Scraping cascade** (lazy escalation — uses cheapest tool that works):
 
-1. **WebFetch** — static sites, CSS extraction
-2. **Lightpanda** — JS-heavy SPAs (requires local Lightpanda service on port 9222)
-3. **Firecrawl** — bulk multi-page crawls (requires API key)
-4. **Browserbase** — auth-walled pages (requires API key + project ID)
+1. **Jina AI** — instant Markdown (free, no setup)
+2. **Crawl4AI** — high-fidelity local scraping (free, requires `npm run setup`)
+3. **WebFetch** — static sites, CSS extraction
+4. **Lightpanda** — JS-heavy SPAs
+5. **Firecrawl** — bulk cloud crawls (requires API key)
+6. **Browserbase** — auth-walled pages (requires API key)
 
 All scrapers are optional. Set `prefer: "auto"` to let the cascade decide.
 

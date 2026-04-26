@@ -23,8 +23,8 @@ export interface RobotsResult {
 
 const DEFAULT_HEADERS = {
   "User-Agent":
-    "Mozilla/5.0 (compatible; Reconstruct-MCP/0.1; +https://github.com/reconstruct-mcp)",
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
   "Accept-Language": "en-US,en;q=0.9",
 };
 
@@ -87,22 +87,35 @@ export async function fetchStylesheets(
 // Extract <link rel="stylesheet"> hrefs from raw HTML
 export function extractStylesheetUrls(html: string, baseUrl: string): string[] {
   const base = new URL(baseUrl);
-  const matches = [
-    ...html.matchAll(/<link[^>]+rel=["']stylesheet["'][^>]*href=["']([^"']+)["']/gi),
-    ...html.matchAll(/<link[^>]+href=["']([^"']+)["'][^>]*rel=["']stylesheet["']/gi),
-  ];
+  
+  // Decodes &amp;, &quot;, etc.
+  const decode = (str: string) => str
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
 
-  return [...new Set(
-    matches
-      .map((m) => {
-        try {
-          return new URL(m[1], base).href;
-        } catch {
-          return null;
-        }
-      })
-      .filter((u): u is string => u !== null)
-  )];
+  // A very aggressive regex for anything that looks like a stylesheet link
+  // Handles <link rel="stylesheet" href="..."> and variations
+  const matches = [...html.matchAll(/<link\s+[^>]*rel\s*=\s*["']?stylesheet["']?[^>]*href\s*=\s*["']?([^"'>\s]+)["']?[^>]*>/gi)];
+  const matchesRev = [...html.matchAll(/<link\s+[^>]*href\s*=\s*["']?([^"'>\s]+)["']?[^>]*rel\s*=\s*["']?stylesheet["']?[^>]*>/gi)];
+
+  const urls: string[] = [];
+  for (const m of [...matches, ...matchesRev]) {
+    try {
+      const decodedHref = decode(m[1]);
+      urls.push(new URL(decodedHref, base).href);
+    } catch {
+      // ignore invalid
+    }
+  }
+
+  const unique = [...new Set(urls)];
+  if (unique.length > 0) {
+    console.log(`[Reconstruct] Discovered ${unique.length} stylesheets in HTML`);
+  }
+  return unique;
 }
 
 // ── robots.txt ───────────────────────────────────────────────────────────────

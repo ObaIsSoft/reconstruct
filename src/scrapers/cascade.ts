@@ -13,6 +13,8 @@ import {
 import { scrapePage, type LightpandaPage } from "./lightpanda.js";
 import { createFirecrawlClient, type FirecrawlPage } from "./firecrawl.js";
 import { scrapeWithBrowserbase, type BrowserbasePage } from "./browserbase.js";
+import { scrapeWithJina } from "./jina.js";
+import { scrapeWithCrawl4AI } from "./crawl4ai_local.js";
 
 // ── URL Classification ────────────────────────────────────────────────────────
 
@@ -89,7 +91,7 @@ export interface CascadePage {
   network_requests: Array<{ url: string; method: string; type: string; status: number; size_bytes: number }>;
   shadow_roots: Array<{ host_tag: string; host_selector: string; inner_html: string }>;
   is_spa: boolean;
-  used_scraper: "webfetch" | "lightpanda" | "firecrawl" | "browserbase";
+  used_scraper: "webfetch" | "jina" | "lightpanda" | "firecrawl" | "browserbase" | "crawl4ai";
   error?: string;
 }
 
@@ -129,16 +131,16 @@ async function tryScraper<T>(
 export async function scrapeSinglePage(
   url: string,
   config: ReconstructConfig,
-  forceMethod?: "webfetch" | "lightpanda" | "firecrawl" | "browserbase"
+  forceMethod?: "webfetch" | "jina" | "lightpanda" | "firecrawl" | "browserbase" | "crawl4ai"
 ): Promise<CascadePage> {
   const prefer = forceMethod ?? config.scrapers.prefer;
   const hostname = new URL(url).hostname;
   const cookies = config.auth.cookies[hostname];
 
-  // Step 1: Always start with a raw fetch to probe the page
-  const raw: FetchResult = prefer !== "browserbase"
-    ? await fetchUrl(url, { cookies, timeout_ms: config.crawl.timeout_per_page })
-    : { url, status: 0, content_type: "", body: "", ok: false };
+  // Step 1: Always start with a raw fetch to probe the page.
+  // This baseline HTML is critical for discovering stylesheets that high-fidelity 
+  // scrapers (like Crawl4AI) might "clean" out of their final rendered output.
+  const raw: FetchResult = await fetchUrl(url, { cookies, timeout_ms: config.crawl.timeout_per_page });
 
   const needsBrowser =
     prefer === "lightpanda" ||
@@ -149,52 +151,107 @@ export async function scrapeSinglePage(
     raw.ok && isAuthWall(raw.url, url);
 
   // Step 2: Decide tool
-  if (needsAuth || prefer === "browserbase") {
-    if (!config.scrapers.browserbase_api_key) {
-      return emptyCascadePage(url, "browserbase", "Browserbase API key not configured");
-    }
+  const preferStr = prefer as string;
 
-    const bbResult = await tryScraper(
-      "browserbase",
-      () => scrapeWithBrowserbase(url, {
-        apiKey: config.scrapers.browserbase_api_key,
-        projectId: config.scrapers.browserbase_project_id,
-        cookies,
-        capture_network: true,
+  // Tier 3: Local Powerhouse (Crawl4AI)
+  if (prefer === "crawl4ai" || (prefer === "auto" && config.scrapers.local_setup_complete)) {
+    const c4aiResult = await tryScraper(
+      "crawl4ai",
+      () => scrapeWithCrawl4AI(url, {
+        venvPath: config.scrapers.crawl4ai_venv_path,
         timeout_ms: config.crawl.timeout_per_page,
       }),
       config.crawl.timeout_per_page
     );
 
-    if (!bbResult.ok) {
-      return emptyCascadePage(url, "browserbase", bbResult.error);
+    if (c4aiResult.ok && !c4aiResult.data.error) {
+      const data = c4aiResult.data;
+      
+      // DIAGNOSTIC DUMP
+      // Removing diagnostic require() dump as it causes ESM crashes.
+      // Use standard page properties as discovery source.
+
+      const stylesheetUrls = [
+        ...extractStylesheetUrls(data.html, url),
+        ...extractStylesheetUrls(raw.body, url),
+        ...(data.stylesheet_urls || [])
+      ];
+      const uniqueStylesheetUrls = [...new Set(stylesheetUrls)];
+      // Attempt Node-side fetch for any missing ones (optional fallback)
+      const fetchedCss = await fetchStylesheets(uniqueStylesheetUrls, cookies);
+
+      return {
+        url,
+        title: extractTitle(data.html),
+        html: data.html,
+        markdown: data.markdown,
+        css_text: [...(data.css_text || []), ...fetchedCss],
+        stylesheet_urls: uniqueStylesheetUrls,
+        inline_styles: extractInlineStyles(data.html),
+        semantic_tree: "", // Bridge.py currently doesn't map full semantic tree yet
+        nav_links: extractNavLinks(data.html, url),
+        footer_links: extractFooterLinks(data.html, url),
+        all_links: extractAllLinks(data.html, url),
+        network_requests: [],
+        shadow_roots: [],
+        is_spa: isSpaHtml(data.html),
+        used_scraper: "crawl4ai",
+      };
     }
-
-    const bb = bbResult.data;
-    const stylesheetUrls = extractStylesheetUrls(bb.html, url);
-    const cssText = await fetchStylesheets(stylesheetUrls, cookies);
-
-    return {
-      url,
-      title: bb.title,
-      html: bb.html,
-      markdown: "",
-      css_text: cssText,
-      stylesheet_urls: stylesheetUrls,
-      inline_styles: extractInlineStyles(bb.html),
-      semantic_tree: "",
-      nav_links: [],
-      footer_links: [],
-      all_links: [],
-      network_requests: bb.network_requests,
-      shadow_roots: [],
-      is_spa: isSpaHtml(bb.html),
-      used_scraper: "browserbase",
-      error: bb.error,
-    };
+    // If auto, we can fall back. If explicit crawl4ai, we return the error
+    if (prefer === "crawl4ai" && !c4aiResult.ok) {
+        return emptyCascadePage(url, "crawl4ai", c4aiResult.error);
+    }
   }
 
-  const preferStr = prefer as string;
+  // Tier 2: Managed (Cloud) - Browserbase
+  if (needsAuth || prefer === "browserbase") {
+    if (!config.scrapers.browserbase_api_key) {
+      if (prefer === "browserbase") return emptyCascadePage(url, "browserbase", "Browserbase API key not configured");
+    } else {
+      const bbResult = await tryScraper(
+        "browserbase",
+        () => scrapeWithBrowserbase(url, {
+          apiKey: config.scrapers.browserbase_api_key,
+          projectId: config.scrapers.browserbase_project_id,
+          cookies,
+          capture_network: true,
+          timeout_ms: config.crawl.timeout_per_page,
+        }),
+        config.crawl.timeout_per_page
+      );
+
+      if (bbResult.ok) {
+        const bb = bbResult.data;
+        const stylesheetUrls = [
+          ...extractStylesheetUrls(bb.html, url),
+          ...extractStylesheetUrls(raw.body, url)
+        ];
+        const uniqueStylesheetUrls = [...new Set(stylesheetUrls)];
+        const cssText = await fetchStylesheets(uniqueStylesheetUrls, cookies);
+
+        return {
+          url,
+          title: bb.title,
+          html: bb.html,
+          markdown: "",
+          css_text: cssText,
+          stylesheet_urls: uniqueStylesheetUrls,
+          inline_styles: extractInlineStyles(bb.html),
+          semantic_tree: "",
+          nav_links: [],
+          footer_links: [],
+          all_links: [],
+          network_requests: bb.network_requests,
+          shadow_roots: [],
+          is_spa: isSpaHtml(bb.html),
+          used_scraper: "browserbase",
+          error: bb.error,
+        };
+      }
+    }
+  }
+
   if (needsBrowser && preferStr !== "firecrawl" && preferStr !== "browserbase") {
     // Lightpanda
     const lpResult = await tryScraper(
@@ -214,15 +271,21 @@ export async function scrapeSinglePage(
     }
 
     const lp = lpResult.data;
-    const cssText = await fetchStylesheets(lp.stylesheet_urls, cookies);
+    
+    const stylesheetUrls = [
+      ...extractStylesheetUrls(lp.html, url),
+      ...extractStylesheetUrls(raw.body, url)
+    ];
+    const uniqueStylesheetUrls = [...new Set(stylesheetUrls)];
+    const fetchedCss = await fetchStylesheets(uniqueStylesheetUrls, cookies);
 
     return {
       url,
       title: lp.title,
-      html: raw.body,
-      markdown: "",
-      css_text: [...cssText, ...lp.inline_styles],
-      stylesheet_urls: lp.stylesheet_urls,
+      html: lp.html,
+      markdown: lp.markdown,
+      css_text: [...lp.css_text, ...fetchedCss, ...lp.inline_styles],
+      stylesheet_urls: uniqueStylesheetUrls,
       inline_styles: lp.inline_styles,
       semantic_tree: lp.semantic_tree,
       nav_links: lp.nav_links,
@@ -253,32 +316,71 @@ export async function scrapeSinglePage(
       config.crawl.timeout_per_page
     );
 
-    if (!fcResult.ok) {
-      return emptyCascadePage(url, "firecrawl", fcResult.error);
+    if (fcResult.ok) {
+        const result = fcResult.data;
+        const stylesheetUrls = extractStylesheetUrls(result.page.html, url);
+        const cssText = await fetchStylesheets(stylesheetUrls, cookies);
+
+        return {
+          url,
+          title: result.page.title,
+          html: result.page.html,
+          markdown: result.page.markdown,
+          css_text: cssText,
+          stylesheet_urls: stylesheetUrls,
+          inline_styles: extractInlineStyles(result.page.html),
+          semantic_tree: "",
+          nav_links: [],
+          footer_links: [],
+          all_links: result.page.links.map((href) => ({ href, label: "" })),
+          network_requests: [],
+          shadow_roots: [],
+          is_spa: isSpaHtml(result.page.html),
+          used_scraper: "firecrawl",
+          error: result.error,
+        };
     }
+    if (prefer === "firecrawl") return emptyCascadePage(url, "firecrawl", fcResult.error);
+  }
 
-    const result = fcResult.data;
-    const stylesheetUrls = extractStylesheetUrls(result.page.html, url);
-    const cssText = await fetchStylesheets(stylesheetUrls, cookies);
+  // Tier 1: Lightweight (Jina AI)
+  if (prefer === "jina" || (prefer === "auto" && config.scrapers.jina_enabled)) {
+    const jinaResult = await tryScraper(
+      "jina",
+      () => scrapeWithJina(url, {
+        apiKey: config.scrapers.jina_api_key,
+        timeout_ms: config.crawl.timeout_per_page,
+      }),
+      config.crawl.timeout_per_page
+    );
 
-    return {
-      url,
-      title: result.page.title,
-      html: result.page.html,
-      markdown: result.page.markdown,
-      css_text: cssText,
-      stylesheet_urls: stylesheetUrls,
-      inline_styles: extractInlineStyles(result.page.html),
-      semantic_tree: "",
-      nav_links: [],
-      footer_links: [],
-      all_links: result.page.links.map((href) => ({ href, label: "" })),
-      network_requests: [],
-      shadow_roots: [],
-      is_spa: isSpaHtml(result.page.html),
-      used_scraper: "firecrawl",
-      error: result.error,
-    };
+    if (jinaResult.ok) {
+      const data = jinaResult.data;
+      // Jina returns no HTML or CSS — use the raw WebFetch result (already fetched
+      // at the top of this function) to extract stylesheets and structural data.
+      const stylesheetUrls = raw.ok ? extractStylesheetUrls(raw.body, url) : [];
+      const cssText = stylesheetUrls.length > 0 ? await fetchStylesheets(stylesheetUrls, cookies) : [];
+      const rawInline = raw.ok ? extractInlineStyles(raw.body) : [];
+
+      return {
+        url,
+        title: data.title || (raw.ok ? extractTitle(raw.body) : ""),
+        html: raw.ok ? raw.body : "",
+        markdown: data.markdown,
+        css_text: [...cssText, ...rawInline],
+        stylesheet_urls: stylesheetUrls,
+        inline_styles: rawInline,
+        semantic_tree: "",
+        nav_links: raw.ok ? extractNavLinks(raw.body, url) : [],
+        footer_links: raw.ok ? extractFooterLinks(raw.body, url) : [],
+        all_links: raw.ok ? extractAllLinks(raw.body, url) : [],
+        network_requests: [],
+        shadow_roots: [],
+        is_spa: raw.ok ? isSpaHtml(raw.body) : false,
+        used_scraper: "jina",
+        error: data.error,
+      };
+    }
   }
 
   // Default: WebFetch only (static site)
