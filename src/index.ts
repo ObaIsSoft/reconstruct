@@ -8,6 +8,7 @@ import { registerCloneTool } from "./tools/clone.js";
 import { registerCannibalizeTool } from "./tools/cannibalize.js";
 import { registerDiffTool } from "./tools/diff.js";
 import { registerSetupTool } from "./tools/setup.js";
+import { registerStatusTool } from "./tools/status.js";
 
 const server = new McpServer({
   name: "reconstruct",
@@ -22,6 +23,7 @@ registerCloneTool(server);
 registerCannibalizeTool(server);
 registerDiffTool(server);
 registerSetupTool(server);
+registerStatusTool(server);
 
 // Start stdio transport
 const transport = new StdioServerTransport();

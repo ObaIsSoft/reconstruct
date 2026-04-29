@@ -10,6 +10,23 @@ import type { ReconstructSchema } from "../schema/types.js";
 
 type Tier = "newbie" | "professional" | "succinct" | "ai";
 
+// ── KB key normalization ───────────────────────────────────────────────────────
+// tech.ts stores framework names lowercase; KB keys use display casing.
+
+function normalizeFwKey(fw: string): string {
+  const aliases: Record<string, string> = {
+    "next.js": "Next.js", nuxt: "Nuxt", sveltekit: "SvelteKit",
+    astro: "Astro", remix: "Remix", gatsby: "Gatsby",
+    react: "React", vue: "Vue", angular: "Angular", htmx: "HTMX",
+  };
+  return aliases[fw.toLowerCase()] ?? fw;
+}
+
+function normalizeStylingKey(s: string): string {
+  if (s === "sass/scss") return "scss";
+  return s;
+}
+
 export function registerExplainTool(server: McpServer): void {
   server.tool(
     "reconstruct_explain",
@@ -391,9 +408,9 @@ function interpretTech(schema: ReconstructSchema, tier: Tier): string {
     return `## Technology\n\`\`\`json\n${JSON.stringify(technology, null, 2)}\n\`\`\``;
   }
 
-  const fw = FRAMEWORK_KB[technology.framework];
+  const fw = FRAMEWORK_KB[normalizeFwKey(technology.framework)];
   const stylingEntries = technology.styling
-    .map((s) => ({ key: s, ...STYLING_KB[s] }))
+    .map((s) => ({ key: s, ...STYLING_KB[normalizeStylingKey(s)] }))
     .filter((e) => e.role);
   const libs = technology.detected_libs
     .map((l) => ({ name: l, note: LIB_KB[l] }))
@@ -471,7 +488,18 @@ function interpretTech(schema: ReconstructSchema, tier: Tier): string {
       `**Tradeoff they accepted:** ${fw.tradeoff}`
     );
   } else if (technology.framework !== "unknown") {
-    lines.push(`Built with **${technology.framework}** — no detailed knowledge entry available for this framework.`);
+    // Not in KB — derive what we can from the signals we actually have
+    const stylingDesc = technology.styling.filter((s) => s !== "unknown").join(" + ") || "custom CSS";
+    const libsNote = technology.detected_libs.length > 0
+      ? ` Libraries present: ${technology.detected_libs.slice(0, 4).join(", ")}.`
+      : "";
+    const stateNote = technology.state.length > 0
+      ? ` State management: ${technology.state.join(", ")} — client-side complexity is present.`
+      : "";
+    lines.push(
+      `Built with **${technology.framework}**. Styling: ${stylingDesc}.${libsNote}${stateNote}`,
+      `Rendering: ${technology.rendering}. No detailed profile for this framework — characteristics above are derived from the detected signals.`
+    );
   } else {
     lines.push(
       "The framework couldn't be fingerprinted. This might be a hand-coded site, a framework that obfuscates its identity, or an unusually lean stack."
@@ -520,13 +548,20 @@ function interpretDesign(schema: ReconstructSchema, tier: Tier): string {
 
   // Font interpretation
   const fontReadings = design.typography.families.map((f) => {
-    const known = FONT_KB[f.family];
+    const known = FONT_KB[f.family] ?? FONT_KB[f.family.split(" ")[0]];
     if (known) return `**${f.family}** (${f.role}): ${known.character}. ${known.signal}.`;
+    // Dynamic fallback — derive meaning from what we actually know about this font
     const isSerif = /serif/i.test(f.family);
-    const isMono = /mono|code|courier|consolas/i.test(f.family);
-    if (isSerif) return `**${f.family}** (${f.role}): serif typeface — signals authority, tradition, or editorial gravitas.`;
-    if (isMono) return `**${f.family}** (${f.role}): monospace — technical, developer-native, or deliberately lo-fi aesthetic.`;
-    return `**${f.family}** (${f.role}): no known profile — likely a custom or less common typeface choice.`;
+    const isMono = /mono|code|courier|consolas|jetbrains|fira|ibm plex/i.test(f.family);
+    const isRounded = /rounded|soft/i.test(f.family);
+    const isVariable = f.weights.length > 4;
+    const src = f.source === "google" ? "Google Fonts" : f.source === "self-hosted" ? "self-hosted (brand investment)" : f.source;
+    const weightNote = f.weights.length > 2 ? `${f.weights.length} weights available — typographic hierarchy through weight is possible.` : "limited weights — hierarchy relies on size and spacing.";
+    if (isMono) return `**${f.family}** (${f.role}, ${src}): monospace — technical, developer-native, or deliberately lo-fi brand identity. ${weightNote}`;
+    if (isSerif) return `**${f.family}** (${f.role}, ${src}): serif — signals authority, editorial gravitas, or a brand investing in typographic character. ${isVariable ? "Variable-weight serif gives fine expressive control." : weightNote}`;
+    if (isRounded) return `**${f.family}** (${f.role}, ${src}): rounded sans-serif — approachable, consumer-facing, softens what might otherwise read as cold or corporate. ${weightNote}`;
+    if (f.source === "self-hosted") return `**${f.family}** (${f.role}, self-hosted): a paid or proprietary typeface — self-hosting signals deliberate type investment, not a default choice. ${weightNote}`;
+    return `**${f.family}** (${f.role}, ${src}): ${isVariable ? "variable-weight" : ""} sans-serif. ${weightNote}`;
   });
 
   // Color system reading
@@ -904,7 +939,7 @@ function interpretPhilosophy(schema: ReconstructSchema, tier: Tier): string {
 
 // ── Main builder ──────────────────────────────────────────────────────────────
 
-function buildExplanation(schema: ReconstructSchema, tier: Tier, focus: string): string {
+export function buildExplanation(schema: ReconstructSchema, tier: Tier, focus: string): string {
   const header =
     tier === "ai"
       ? `{"url":"${schema.meta.url}","tier":"${tier}","captured":"${schema.meta.captured_at}","confidence":${schema.meta.confidence}}`

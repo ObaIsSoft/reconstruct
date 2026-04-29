@@ -3,6 +3,8 @@ import { readFileSync, existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
+const DEFAULT_CACHE_DIR = join(homedir(), ".reconstruct", "cache");
+
 // ── Zod Schemas ──────────────────────────────────────────────────────────────
 
 export const CrawlConfigSchema = z.object({
@@ -34,7 +36,7 @@ export const OutputConfigSchema = z.object({
   // 1=newbie, 2=student, 3=designer, 4=developer, 5=AI/agent
   default_audience: z.number().min(1).max(5).default(4),
   cache_ttl_hours: z.number().min(0).max(8760).default(24),
-  cache_dir: z.string().default(".reconstruct/cache"),
+  cache_dir: z.string().default(DEFAULT_CACHE_DIR),
 });
 
 export const AuthConfigSchema = z.object({

@@ -15,80 +15,153 @@ export interface DesignPhilosophy {
 
 // ── Design school inference ───────────────────────────────────────────────────
 
+// Score-based: each signal returns 0-N points; threshold determines match.
+// This prevents strict AND conditions from blocking most real sites.
 interface SchoolSignal {
   name: string;
-  test: (tokens: CSSTokens, html: string) => boolean;
+  score: (tokens: CSSTokens, html: string) => number;
+  threshold: number;
 }
 
 const SCHOOL_SIGNALS: SchoolSignal[] = [
   {
     name: "minimalism",
-    test: (t) =>
-      t.colors.length < 5 &&
-      t.elevation.length === 0 &&
-      t.border_radius.every((r) => r <= 4) &&
-      t.spacing.base_unit >= 8,
+    threshold: 2,
+    score: (t) => {
+      let s = 0;
+      if (t.colors.length < 5) s++;
+      if (t.colors.length < 3) s++;
+      if (t.elevation.length === 0) s++;
+      if (t.border_radius.length === 0 || t.border_radius.every((r) => r <= 8)) s++;
+      if (t.spacing.base_unit >= 8) s++;
+      if (t.motion.durations_ms.length === 0) s++;
+      return s;
+    },
   },
   {
     name: "neo-brutalism",
-    test: (t, html) =>
-      t.elevation.some((s) => /\d+px \d+px 0/.test(s.value)) &&
-      t.colors.some((c) => isHighContrast(c.value)) &&
-      t.border_radius.some((r) => r === 0),
+    threshold: 2,
+    score: (t, html) => {
+      let s = 0;
+      if (t.elevation.some((sh) => /\d+px \d+px 0/.test(sh.value))) s += 2;
+      if (t.colors.some((c) => isHighContrast(c.value))) s++;
+      if (t.border_radius.some((r) => r === 0)) s++;
+      if (/border.*\d+px.*solid/i.test(html)) s++;
+      return s;
+    },
   },
   {
     name: "glassmorphism",
-    test: (_, html) =>
-      /backdrop-filter/.test(html) ||
-      /blur\(\d+px\)/.test(html),
+    threshold: 1,
+    score: (_, html) => {
+      let s = 0;
+      if (/backdrop-filter/.test(html)) s += 2;
+      if (/blur\(\d+px\)/.test(html)) s++;
+      if (/rgba\([^)]+,\s*0\.\d\)/.test(html)) s++;
+      return s;
+    },
   },
   {
     name: "neumorphism",
-    test: (t) =>
-      t.elevation.some(
-        (s) =>
-          s.value.includes("inset") &&
-          (s.value.match(/rgba/g) ?? []).length >= 2
-      ),
+    threshold: 1,
+    score: (t) => {
+      let s = 0;
+      if (t.elevation.some((sh) => sh.value.includes("inset") && (sh.value.match(/rgba/g) ?? []).length >= 2)) s += 2;
+      if (t.elevation.length >= 2 && t.elevation.some((sh) => sh.value.includes("inset"))) s++;
+      return s;
+    },
   },
   {
     name: "flat-design",
-    test: (t) =>
-      t.elevation.length === 0 &&
-      t.colors.length >= 3 &&
-      t.motion.durations_ms.length === 0,
+    threshold: 2,
+    score: (t) => {
+      let s = 0;
+      if (t.elevation.length === 0) s += 2;
+      if (t.colors.length >= 3) s++;
+      if (t.motion.durations_ms.length === 0) s++;
+      if (t.border_radius.length > 0 && t.border_radius.every((r) => r < 6)) s++;
+      return s;
+    },
   },
   {
     name: "material-design",
-    test: (t, html) =>
-      t.elevation.length >= 3 &&
-      t.motion.easings.some((e) => /cubic-bezier\(0\.4/.test(e)) &&
-      /ripple|MuiButton|MuiCard/.test(html),
+    threshold: 2,
+    score: (t, html) => {
+      let s = 0;
+      if (t.elevation.length >= 3) s += 2;
+      if (t.motion.easings.some((e) => /cubic-bezier\(0\.4/.test(e))) s++;
+      if (/ripple|MuiButton|MuiCard/.test(html)) s += 2;
+      if (t.motion.durations_ms.some((d) => d === 200 || d === 300)) s++;
+      return s;
+    },
   },
   {
     name: "claymorphism",
-    test: (t) =>
-      t.border_radius.some((r) => r >= 20) &&
-      t.elevation.some((s) => /rgba/.test(s.value)) &&
-      t.colors.some((c) => isSaturated(c.value)),
+    threshold: 2,
+    score: (t) => {
+      let s = 0;
+      if (t.border_radius.some((r) => r >= 16)) s++;
+      if (t.border_radius.some((r) => r >= 24)) s++;
+      if (t.elevation.some((sh) => /rgba/.test(sh.value))) s++;
+      if (t.colors.some((c) => isSaturated(c.value))) s++;
+      return s;
+    },
   },
   {
     name: "dark-mode-first",
-    test: (t) =>
-      t.dark_mode &&
-      t.colors.filter((c) => isDark(c.value)).length >
-        t.colors.filter((c) => !isDark(c.value)).length,
+    threshold: 2,
+    score: (t) => {
+      let s = 0;
+      if (t.dark_mode) s++;
+      if (t.colors.filter((c) => isDark(c.value)).length > t.colors.filter((c) => !isDark(c.value)).length) s++;
+      if (t.colors.some((c) => isDark(c.value) && c.occurrences > 3)) s++;
+      return s;
+    },
   },
   {
     name: "typography-led",
-    test: (t) =>
-      t.typography.families.length >= 2 &&
-      t.typography.scale.length >= 6 &&
-      t.colors.length < 4,
+    threshold: 2,
+    score: (t) => {
+      let s = 0;
+      if (t.typography.families.length >= 2) s++;
+      if (t.typography.scale.length >= 6) s++;
+      if (t.typography.scale.some((sz) => sz >= 48)) s++;
+      if (t.colors.length < 5) s++;
+      return s;
+    },
   },
   {
     name: "gradient-heavy",
-    test: (_, html) => (html.match(/gradient/g) ?? []).length > 5,
+    threshold: 1,
+    score: (_, html) => {
+      const count = (html.match(/gradient/g) ?? []).length;
+      return count > 5 ? 2 : count > 2 ? 1 : 0;
+    },
+  },
+  {
+    name: "editorial",
+    threshold: 2,
+    score: (t) => {
+      let s = 0;
+      if (t.typography.families.some((f) => /serif/i.test(f.family))) s++;
+      if (t.typography.scale.length >= 5) s++;
+      if (t.typography.families.length >= 2) s++;
+      if (t.spacing.scale.some((sp) => sp >= 48)) s++;
+      if (t.colors.length < 5) s++;
+      return s;
+    },
+  },
+  {
+    name: "data-dense",
+    threshold: 2,
+    score: (t) => {
+      let s = 0;
+      if (t.spacing.base_unit <= 4) s += 2;
+      if (t.typography.base_size <= 13) s++;
+      if (t.typography.families.some((f) => f.role === "mono")) s++;
+      if (t.colors.length >= 8) s++;
+      return s;
+    },
   },
 ];
 
@@ -96,84 +169,141 @@ const SCHOOL_SIGNALS: SchoolSignal[] = [
 
 interface PersonalitySignal {
   trait: string;
-  test: (tokens: CSSTokens, html: string) => boolean;
+  score: (tokens: CSSTokens, html: string) => number;
+  threshold: number;
 }
 
 const PERSONALITY_SIGNALS: PersonalitySignal[] = [
   {
     trait: "clinical",
-    test: (t) =>
-      t.colors.length < 4 &&
-      t.spacing.base_unit === 8 &&
-      t.border_radius.every((r) => r <= 4),
+    threshold: 2,
+    score: (t) => {
+      let s = 0;
+      if (t.colors.length < 5) s++;
+      if (t.border_radius.length === 0 || t.border_radius.every((r) => r <= 6)) s++;
+      if (t.spacing.base_unit >= 8) s++;
+      if (t.motion.durations_ms.length === 0) s++;
+      if (t.typography.families.every((f) => !/serif/i.test(f.family))) s++;
+      return s;
+    },
   },
   {
     trait: "warm",
-    test: (t) =>
-      t.colors.some((c) => isWarm(c.value)),
+    threshold: 1,
+    score: (t) => {
+      let s = 0;
+      if (t.colors.some((c) => isWarm(c.value))) s++;
+      if (t.colors.filter((c) => isWarm(c.value)).length >= 2) s++;
+      if (t.border_radius.some((r) => r >= 8)) s++;
+      return s;
+    },
   },
   {
     trait: "playful",
-    test: (t) =>
-      t.border_radius.some((r) => r >= 16) &&
-      t.colors.length >= 5 &&
-      t.motion.patterns.includes("bounce"),
+    threshold: 2,
+    score: (t, html) => {
+      let s = 0;
+      if (t.border_radius.some((r) => r >= 16)) s++;
+      if (t.colors.length >= 5) s++;
+      if (t.colors.some((c) => isSaturated(c.value))) s++;
+      if (t.motion.patterns.includes("bounce")) s++;
+      if (/emoji|🎉|🚀|✨/.test(html)) s++;
+      if (t.motion.durations_ms.length > 0) s++;
+      return s;
+    },
   },
   {
     trait: "authoritative",
-    test: (t) =>
-      t.typography.families.some((f) => /serif/i.test(f.family)) &&
-      t.colors.some((c) => isDark(c.value)) &&
-      t.spacing.base_unit >= 8,
+    threshold: 2,
+    score: (t) => {
+      let s = 0;
+      if (t.typography.families.some((f) => /serif/i.test(f.family))) s++;
+      if (t.colors.some((c) => isDark(c.value))) s++;
+      if (t.spacing.base_unit >= 8) s++;
+      if (t.typography.scale.length >= 4) s++;
+      if (t.colors.length < 5) s++;
+      return s;
+    },
   },
   {
     trait: "energetic",
-    test: (t) =>
-      t.motion.durations_ms.some((d) => d < 200) &&
-      t.colors.some((c) => isSaturated(c.value)),
+    threshold: 2,
+    score: (t) => {
+      let s = 0;
+      if (t.motion.durations_ms.some((d) => d < 200)) s++;
+      if (t.motion.durations_ms.length > 0) s++;
+      if (t.colors.some((c) => isSaturated(c.value))) s++;
+      if (t.typography.scale.some((sz) => sz >= 48)) s++;
+      return s;
+    },
   },
   {
     trait: "elegant",
-    test: (t) =>
-      t.typography.families.some(
-        (f) => /serif|italic/i.test(f.family)
-      ) &&
-      t.spacing.base_unit >= 8 &&
-      t.colors.length < 6,
+    threshold: 2,
+    score: (t) => {
+      let s = 0;
+      if (t.typography.families.some((f) => /serif|italic/i.test(f.family))) s++;
+      if (t.spacing.base_unit >= 8) s++;
+      if (t.colors.length < 6) s++;
+      if (t.elevation.length > 0 && t.elevation.length < 4) s++;
+      if (t.motion.easings.some((e) => /cubic-bezier/.test(e))) s++;
+      return s;
+    },
   },
   {
     trait: "bold",
-    test: (t) =>
-      t.typography.scale.some((s) => s >= 48) &&
-      t.colors.some((c) => isSaturated(c.value)),
+    threshold: 1,
+    score: (t) => {
+      let s = 0;
+      if (t.typography.scale.some((sz) => sz >= 48)) s++;
+      if (t.typography.scale.some((sz) => sz >= 72)) s++;
+      if (t.colors.some((c) => isSaturated(c.value))) s++;
+      return s;
+    },
   },
   {
     trait: "technical",
-    test: (t) =>
-      t.typography.families.some((f) => f.role === "mono") &&
-      t.colors.some((c) => isDark(c.value)),
+    threshold: 1,
+    score: (t, html) => {
+      let s = 0;
+      if (t.typography.families.some((f) => f.role === "mono")) s += 2;
+      if (t.colors.some((c) => isDark(c.value))) s++;
+      if (/code|pre|kbd/.test(html)) s++;
+      return s;
+    },
   },
 ];
 
 // ── Density ───────────────────────────────────────────────────────────────────
 
 export function inferDensity(tokens: CSSTokens): DesignDensity {
-  const { scale, base_unit } = tokens.spacing;
-  const avgSpacing = scale.reduce((a, b) => a + b, 0) / (scale.length || 1);
+  const { scale } = tokens.spacing;
+  if (scale.length === 0) return "moderate";
 
-  if (avgSpacing > 24 || base_unit >= 8) return "sparse";
-  if (avgSpacing < 12 || base_unit <= 4) return "dense";
+  // Median is more robust than average — large section spacings shouldn't be cancelled
+  // by many small inline paddings, and vice versa.
+  const sorted = [...scale].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const maxSpacing = sorted[sorted.length - 1];
+  const largeRatio = sorted.filter((s) => s >= 32).length / sorted.length;
+
+  if (median > 20 || largeRatio > 0.25 || maxSpacing >= 80) return "sparse";
+  if (median < 8 && largeRatio < 0.1) return "dense";
   return "moderate";
 }
 
 // ── Whitespace use ────────────────────────────────────────────────────────────
 
 export function inferWhitespace(tokens: CSSTokens): "generous" | "moderate" | "tight" {
-  const largeSpacings = tokens.spacing.scale.filter((s) => s >= 32).length;
-  const totalSpacings = tokens.spacing.scale.length;
+  const { scale } = tokens.spacing;
+  if (scale.length === 0) return "moderate";
 
-  if (largeSpacings / Math.max(totalSpacings, 1) > 0.4) return "generous";
-  if (largeSpacings / Math.max(totalSpacings, 1) < 0.15) return "tight";
+  const largeSpacings = scale.filter((s) => s >= 32).length;
+  const totalSpacings = scale.length;
+  const maxSpacing = scale[scale.length - 1] ?? 0;
+
+  if (largeSpacings / Math.max(totalSpacings, 1) > 0.3 || maxSpacing >= 80) return "generous";
+  if (largeSpacings / Math.max(totalSpacings, 1) < 0.1 && maxSpacing < 32) return "tight";
   return "moderate";
 }
 
@@ -242,14 +372,14 @@ export function inferPhilosophy(
   accessibilityGrade: AccessibilityGrade
 ): DesignPhilosophy {
   const design_school = SCHOOL_SIGNALS
-    .filter(({ test }) => {
-      try { return test(tokens, html); } catch { return false; }
+    .filter(({ score, threshold }) => {
+      try { return score(tokens, html) >= threshold; } catch { return false; }
     })
     .map(({ name }) => name);
 
   const personality = PERSONALITY_SIGNALS
-    .filter(({ test }) => {
-      try { return test(tokens, html); } catch { return false; }
+    .filter(({ score, threshold }) => {
+      try { return score(tokens, html) >= threshold; } catch { return false; }
     })
     .map(({ trait }) => trait);
 

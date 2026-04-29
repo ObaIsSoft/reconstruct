@@ -42,6 +42,32 @@ function rgbToHex(r: number, g: number, b: number): string {
   return `#${[r, g, b].map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
 }
 
+// ── CSS variable resolution ───────────────────────────────────────────────────
+// Modern sites define colors/fonts as CSS custom properties and reference them
+// via var(). Without resolving these, the extractor misses most active usages.
+
+function buildCssVarMap(cssText: string): Map<string, string> {
+  const vars = new Map<string, string>();
+  const rootRe = /:root\s*\{([^}]+)\}/g;
+  for (const m of cssText.matchAll(rootRe)) {
+    for (const prop of m[1].matchAll(/--([\w-]+)\s*:\s*([^;]+);/g)) {
+      vars.set(`--${prop[1].trim()}`, prop[2].trim());
+    }
+  }
+  return vars;
+}
+
+function resolveVar(ref: string, vars: Map<string, string>, depth = 0): string | null {
+  if (depth > 6) return null;
+  const val = vars.get(ref);
+  if (!val) return null;
+  const inner = val.match(/^var\((--[\w-]+)\)/);
+  if (inner) return resolveVar(inner[1], vars, depth + 1);
+  return val;
+}
+
+// ── Color context helpers ─────────────────────────────────────────────────────
+
 // Infer usage from the CSS property the color appears in
 function inferColorUsage(context: string): ColorUsage {
   const ctx = context.toLowerCase();
@@ -88,68 +114,79 @@ function inferColorName(hex: string, usage: ColorUsage, index: number): string {
   return `${usage}-${index}`;
 }
 
-export function extractColors(cssTexts: string[], fallbackContext?: string): ColorToken[] {
+export function extractColors(
+  cssTexts: string[],
+  fallbackContext?: string,
+  varMap?: Map<string, string>
+): ColorToken[] {
   const full = cssTexts.join("\n");
   const counts = new Map<string, { count: number; contexts: string[] }>();
-  
-  // Primary: From CSS Rules
+
+  const addColor = (hex: string, context: string, weight = 1) => {
+    const existing = counts.get(hex) ?? { count: 0, contexts: [] };
+    existing.count += weight;
+    if (existing.contexts.length < 5) existing.contexts.push(context);
+    counts.set(hex, existing);
+  };
+
+  // Pass 1: direct hex/rgb/hsl values in CSS rule blocks
   const ruleRe = /([^{}]+)\{([^}]+)\}/g;
   let match: RegExpExecArray | null;
-
   while ((match = ruleRe.exec(full)) !== null) {
-    const property = match[1] ?? "";
+    const ctx = (match[1] ?? "").trim();
     const block = match[2] ?? "";
-
-    const extractFromBlock = (colorHex: string) => {
-      const existing = counts.get(colorHex) ?? { count: 0, contexts: [] };
-      existing.count++;
-      if (existing.contexts.length < 5) existing.contexts.push(property.trim());
-      counts.set(colorHex, existing);
-    };
-
     for (const hm of block.matchAll(HEX_RE)) {
       if (hm[1].length === 3 || hm[1].length === 6 || hm[1].length === 8) {
-        extractFromBlock(`#${normalizeHex(hm[1])}`);
+        addColor(`#${normalizeHex(hm[1])}`, ctx);
       }
     }
-    for (const rm of block.matchAll(RGB_RE)) {
-      extractFromBlock(rgbToHex(+rm[1], +rm[2], +rm[3]));
-    }
-    for (const hm of block.matchAll(HSL_RE)) {
-      extractFromBlock(hslToHex(+hm[1], +hm[2], +hm[3]));
+    for (const rm of block.matchAll(RGB_RE)) addColor(rgbToHex(+rm[1], +rm[2], +rm[3]), ctx);
+    for (const hm of block.matchAll(HSL_RE)) addColor(hslToHex(+hm[1], +hm[2], +hm[3]), ctx);
+  }
+
+  // Pass 2: resolve var() references — each usage of a CSS variable counts as
+  // an active usage of the underlying color, weighted higher than a definition.
+  if (varMap && varMap.size > 0) {
+    const ruleRe2 = /([^{}]+)\{([^}]+)\}/g;
+    while ((match = ruleRe2.exec(full)) !== null) {
+      const ctx = (match[1] ?? "").trim();
+      // Skip :root definitions — those are already counted in pass 1
+      if (/^:root/.test(ctx.trim())) continue;
+      const block = match[2] ?? "";
+      for (const vm of block.matchAll(/var\((--[\w-]+)\)/g)) {
+        const resolved = resolveVar(vm[1], varMap);
+        if (!resolved) continue;
+        for (const hm of resolved.matchAll(HEX_RE)) {
+          if (hm[1].length === 3 || hm[1].length === 6) {
+            // Weight = 3: active usage outweighs a single :root definition
+            addColor(`#${normalizeHex(hm[1])}`, ctx, 3);
+          }
+        }
+        for (const rm of resolved.matchAll(RGB_RE)) addColor(rgbToHex(+rm[1], +rm[2], +rm[3]), ctx, 3);
+      }
     }
   }
 
-  // GLOBAL FALLBACK SNIFFER: If CSS rules are empty or insufficient,
-  // scan the entire fallback context (raw HTML/Markdown) for color signatures.
+  // Fallback: if no CSS was extracted, sniff raw HTML/markdown for color values
   if (counts.size < 3 && fallbackContext && fallbackContext.length > 0) {
     for (const hm of fallbackContext.matchAll(HEX_RE)) {
       if (hm[1].length === 3 || hm[1].length === 6 || hm[1].length === 8) {
-        const hex = `#${normalizeHex(hm[1])}`;
-        const existing = counts.get(hex) ?? { count: 0, contexts: [] };
-        existing.count++;
-        counts.set(hex, existing);
+        addColor(`#${normalizeHex(hm[1])}`, "html");
       }
     }
-    // Sniff common RGB/HSL text patterns
     for (const rm of fallbackContext.matchAll(/rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)/gi)) {
-      const hex = rgbToHex(+rm[1], +rm[2], +rm[3]);
-      const existing = counts.get(hex) ?? { count: 0, contexts: [] };
-      existing.count++;
-      counts.set(hex, existing);
+      addColor(rgbToHex(+rm[1], +rm[2], +rm[3]), "html");
     }
   }
 
-  // Filter outliers (< 2 occurrences unless very few total)
   const minOccurrences = counts.size > 20 ? 2 : 1;
 
   return Array.from(counts.entries())
     .filter(([, v]) => v.count >= minOccurrences)
     .sort((a, b) => b[1].count - a[1].count)
-    .slice(0, 40)  // cap palette at 40 colors
+    .slice(0, 40)
     .map(([hex, { count, contexts }], i) => {
-      const primaryContext = contexts[0] ?? "";
-      const usage = inferColorUsage(primaryContext);
+      const usage = inferColorUsage(contexts[0] ?? "");
       return {
         value: hex,
         usage,
@@ -170,11 +207,16 @@ function inferFontRole(selector: string): FontRole {
   return "body";
 }
 
-function inferFontSource(family: string, cssText: string): FontSource {
-  const f = family.toLowerCase();
-  if (/system-ui|-apple-system|segoe ui|roboto|arial|helvetica|georgia|times/.test(f)) return "system";
-  if (cssText.includes("fonts.googleapis.com") && cssText.includes(family.split(",")[0].replace(/['"]/g, ""))) return "google";
-  if (cssText.includes("@font-face")) return "self-hosted";
+const SYSTEM_FONTS_RE = /^(system-ui|-apple-system|blinkmacsystemfont|segoe ui|roboto|arial|helvetica neue|helvetica|georgia|times new roman|times|verdana|tahoma|trebuchet ms|courier new|courier|monospace|sans-serif|serif|cursive|fantasy|ui-monospace|ui-sans-serif|ui-serif)$/i;
+
+function inferFontSource(primaryFamily: string, cssText: string): FontSource {
+  if (SYSTEM_FONTS_RE.test(primaryFamily.trim())) return "system";
+  // If Google Fonts CSS was fetched (contains gstatic.com) and this family has @font-face
+  const escapedFamily = primaryFamily.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const hasFontFace = new RegExp(`@font-face[^}]*font-family\\s*:\\s*['"]?${escapedFamily}['"]?`, "i").test(cssText);
+  if (hasFontFace && cssText.includes("fonts.gstatic.com")) return "google";
+  if (hasFontFace) return "self-hosted";
+  if (cssText.includes("fonts.googleapis.com")) return "google";
   return "cdn";
 }
 
@@ -186,16 +228,20 @@ export interface TypographySchema {
   letter_spacing_pattern: string;
 }
 
-export function extractTypography(cssTexts: string[], fallbackContext?: string): TypographySchema {
+export function extractTypography(
+  cssTexts: string[],
+  fallbackContext?: string,
+  varMap?: Map<string, string>
+): TypographySchema {
   const full = cssTexts.join("\n");
   const analysisContext = full.length > 50 ? full : (fallbackContext ?? "");
-  
-  const familyMap = new Map<string, { weights: Set<number>, selectors: string[] }>();
+
+  // primaryName → { weights, selectors, occurrences }
+  const familyMap = new Map<string, { weights: Set<number>; selectors: string[]; count: number }>();
   const sizes = new Set<number>();
   const lineHeights: number[] = [];
   const letterSpacings: string[] = [];
 
-  // Rules: [selector] { [block] }
   const ruleRe = /([^{}]+)\{([^}]+)\}/g;
   let match: RegExpExecArray | null;
 
@@ -203,26 +249,54 @@ export function extractTypography(cssTexts: string[], fallbackContext?: string):
     const selector = match[1] ?? "";
     const block = match[2] ?? "";
 
-    // font-family
+    // font-family — resolve CSS variable references before storing
+    // Skip @font-face blocks — those are font definitions, not element usages.
+    // Fonts referenced only in @font-face but never in rules are loaded but unused.
+    if (/@font-face/.test(selector)) continue;
     const ffMatch = block.match(/font-family\s*:\s*([^;]+)/i);
     if (ffMatch) {
-      const family = ffMatch[1].trim();
-      const existing = familyMap.get(family) ?? { selectors: [], weights: new Set() };
-      existing.selectors.push(selector);
-      familyMap.set(family, existing);
-    }
+      let raw = ffMatch[1].trim();
 
-    // font-weight
-    const fwMatch = block.match(/font-weight\s*:\s*(\d+)/i);
-    if (fwMatch) {
-      const family = [...familyMap.keys()].at(-1);
-      if (family) {
-        const existing = familyMap.get(family)!;
-        existing.weights.add(parseInt(fwMatch[1]));
+      // Resolve var() chain up to depth 6
+      const varRef = raw.match(/^var\((--[\w-]+)\)/);
+      if (varRef && varMap) {
+        const resolved = resolveVar(varRef[1], varMap);
+        if (!resolved) {
+          // Unresolvable var — skip entirely, don't store "var(--foo)" as a font name
+        } else {
+          raw = resolved;
+        }
+      }
+
+      // Skip still-unresolved var() references
+      if (/^var\(/.test(raw)) {
+        // don't store
+      } else {
+        // Extract primary font name from the stack: "'Quicksand', sans-serif" → "Quicksand"
+        const primary = raw.split(",")[0].replace(/['"]/g, "").trim();
+        if (primary && primary.length > 0 && !SYSTEM_FONTS_RE.test(primary)) {
+          const existing = familyMap.get(primary) ?? { selectors: [], weights: new Set(), count: 0 };
+          existing.selectors.push(selector.trim());
+          existing.count++;
+          familyMap.set(primary, existing);
+        } else if (primary && SYSTEM_FONTS_RE.test(primary)) {
+          // Still store system fonts if they're the only option
+          const existing = familyMap.get(primary) ?? { selectors: [], weights: new Set(), count: 0 };
+          existing.selectors.push(selector.trim());
+          existing.count++;
+          familyMap.set(primary, existing);
+        }
       }
     }
 
-    // font-size in px/rem
+    // font-weight — attribute to the most recently seen family
+    const fwMatch = block.match(/font-weight\s*:\s*(\d+)/i);
+    if (fwMatch) {
+      const family = [...familyMap.keys()].at(-1);
+      if (family) familyMap.get(family)!.weights.add(parseInt(fwMatch[1]));
+    }
+
+    // font-size
     for (const sm of block.matchAll(/font-size\s*:\s*([\d.]+)(px|rem)/gi)) {
       const val = parseFloat(sm[1]);
       const px = sm[2] === "rem" ? Math.round(val * 16) : Math.round(val);
@@ -244,26 +318,26 @@ export function extractTypography(cssTexts: string[], fallbackContext?: string):
   const scale = [...sizes].sort((a, b) => a - b);
   const base_size = scale.find((s) => s >= 14 && s <= 18) ?? 16;
 
-  // Median line height
   const sortedLh = [...lineHeights].sort((a, b) => a - b);
   const line_height_base = sortedLh[Math.floor(sortedLh.length / 2)] ?? 1.5;
 
-  // Letter spacing summary
   const lsUniq = [...new Set(letterSpacings)];
   const letter_spacing_pattern = lsUniq.length === 0
     ? "normal"
-    : lsUniq.some((s) => s.includes("em") && parseFloat(s) < 0)
-      ? "tight"
-      : lsUniq.some((s) => parseFloat(s) > 0.05)
-        ? "loose"
-        : "normal";
+    : lsUniq.some((s) => s.includes("em") && parseFloat(s) < 0) ? "tight"
+    : lsUniq.some((s) => parseFloat(s) > 0.05) ? "loose"
+    : "normal";
 
-  const families: FontToken[] = [...familyMap.entries()].slice(0, 5).map(([family, data]) => ({
-    family: family.replace(/['"]/g, "").trim(),
-    source: inferFontSource(family, full),
-    weights: data.weights.size > 0 ? [...data.weights].sort() : [400],
-    role: inferFontRole(data.selectors[0] ?? ""),
-  }));
+  // Sort by occurrence count descending, cap at 5
+  const families: FontToken[] = [...familyMap.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 5)
+    .map(([primary, data]) => ({
+      family: primary,
+      source: inferFontSource(primary, full),
+      weights: data.weights.size > 0 ? [...data.weights].sort() : [400],
+      role: inferFontRole(data.selectors[0] ?? ""),
+    }));
 
   return { families, scale, base_size, line_height_base, letter_spacing_pattern };
 }
@@ -504,14 +578,17 @@ export interface CSSTokens {
 export function extractCSSTokens(cssTexts: string[], rawContext?: string): CSSTokens {
   const allCss = cssTexts.join("\n");
   const analysisContext = allCss.length > 0 ? allCss : (rawContext ?? "");
-  
+
   console.log(`[Reconstruct] Extracting tokens from ${cssTexts.length} CSS blocks (Total chars: ${allCss.length})`);
   if (allCss.length === 0 && analysisContext.length > 0) {
     console.log(`[Reconstruct] Low-fidelity fallback: Sniffing Design DNA from raw context (${analysisContext.length} chars)`);
   }
 
-  const colors = extractColors(cssTexts, analysisContext);
-  const typography = extractTypography(cssTexts, analysisContext);
+  // Build CSS variable map once — shared by color and typography extractors
+  const varMap = buildCssVarMap(analysisContext);
+
+  const colors = extractColors(cssTexts, analysisContext, varMap);
+  const typography = extractTypography(cssTexts, analysisContext, varMap);
 
   return {
     colors,

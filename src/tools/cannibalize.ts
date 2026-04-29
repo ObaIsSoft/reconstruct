@@ -202,9 +202,9 @@ async function buildCannibalizeOutput(
     lines.push("");
   }
 
-  // Component scaffold
+  // Component scaffold — AI-driven from real detected schema data
   lines.push("## Component Scaffold");
-  lines.push(buildCannibalizedComponent(spec, framework, intent));
+  lines.push(await generateComponentCode(extra, spec, sources, framework, intent, constraints));
 
   return lines.join("\n");
 }
@@ -281,16 +281,41 @@ Return a sophisticated, reasoned design spec. Resolve conflicts based on the int
 
         if (response.content && "text" in response.content) {
             const raw = response.content.text;
-            // Handle markdown code blocks if the AI includes them
             const jsonMatch = raw.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 try {
                     const ai = JSON.parse(jsonMatch[0]);
-                    return {
-                        ...baseline,
-                        ai_strategy: ai.strategy,
-                        ai_rationale: ai.rationale,
-                    };
+                    // Apply AI spec overrides — don't discard them
+                    if (Array.isArray(ai.spec?.colors) && ai.spec.colors.length > 0) {
+                        baseline.colors = ai.spec.colors.map((c: any) => ({
+                            value: c.value,
+                            source_url: c.source_url ?? sources[0].url,
+                            rationale: c.rationale ?? "AI-selected",
+                        }));
+                    }
+                    if (ai.spec?.border_radius != null) {
+                        baseline.border_radius = {
+                            value: [ai.spec.border_radius],
+                            source_url: sources[0].url,
+                            rationale: "AI-selected radius",
+                        };
+                    }
+                    if (ai.spec?.spacing_base != null) {
+                        const existing = baseline.spacing?.value as any;
+                        baseline.spacing = {
+                            value: { ...(existing ?? {}), base_unit: ai.spec.spacing_base },
+                            source_url: sources[0].url,
+                            rationale: `${ai.spec.spacing_base}px base — AI-selected`,
+                        };
+                    }
+                    if (Array.isArray(ai.spec?.typography) && ai.spec.typography.length > 0) {
+                        baseline.typography = ai.spec.typography.map((t: any) => ({
+                            value: t.value,
+                            source_url: t.source_url ?? sources[0].url,
+                            rationale: t.rationale ?? "AI-selected",
+                        }));
+                    }
+                    return { ...baseline, ai_strategy: ai.strategy, ai_rationale: ai.rationale };
                 } catch (e) {
                     console.error("[cannibalize] JSON parse failed:", e);
                 }
@@ -431,66 +456,225 @@ function buildCreativeBrief(
   return lines.filter(Boolean).join("\n");
 }
 
-function buildCannibalizedComponent(
-  spec: CannibalizedSpec,
-  framework: string,
-  intent: string
-): string {
-  const primaryColor = String(spec.colors[0]?.value ?? "#000");
-  const accentColor = String(spec.colors[1]?.value ?? "#666");
-  const fontFamily = String(spec.typography[0]?.value ?? "system-ui");
-  const motionData = spec.motion?.value as ReconstructSchema["design"]["motion"] | undefined;
-  const duration = motionData?.durations_ms?.[0] ?? 200;
-  const easing = motionData?.easings?.[0] ?? "ease";
-  const radii = spec.border_radius?.value as number[] | undefined;
-  const radius = radii?.[0] ?? 8;
+// ── Dynamic AI-driven component generation ─────────────────────────────────────
+// Compiles actual detected components, sections, interactions, and tokens from
+// the real schema data and sends them to AI. No hardcoded templates.
 
-  if (framework === "react") {
-    return [
-      "```tsx",
-      `// Cannibalized Button — DNA from ${spec.colors[0]?.source_url ? shortUrl(spec.colors[0].source_url) : "multiple sources"}`,
-      `export function CannButton({ children, variant = "primary", ...props }) {`,
-      `  return (`,
-      `    <button`,
-      `      style={{`,
-      `        fontFamily: "${fontFamily}",`,
-      `        borderRadius: "${radius}px",`,
-      `        transition: \`all ${duration}ms ${easing}\`,`,
-      `        background: variant === "primary" ? "${primaryColor}" : "transparent",`,
-      `        color: variant === "primary" ? "white" : "${primaryColor}",`,
-      `        border: variant === "primary" ? "none" : \`1px solid ${primaryColor}\`,`,
-      `        padding: "10px 20px",`,
-      `        cursor: "pointer",`,
-      `      }}`,
-      `      onMouseEnter={e => (e.currentTarget.style.opacity = "0.88")}`,
-      `      onMouseLeave={e => (e.currentTarget.style.opacity = "1")}`,
-      `      {...props}`,
-      `    >`,
-      `      {children}`,
-      `    </button>`,
-      `  );`,
-      `}`,
-      "```",
-    ].join("\n");
+async function generateComponentCode(
+  extra: RequestHandlerExtra<any, any>,
+  spec: CannibalizedSpec,
+  sources: Array<{ url: string; take: string[]; schema: ReconstructSchema }>,
+  framework: string,
+  intent: string,
+  constraints?: string
+): Promise<string> {
+  if (framework === "tokens") {
+    return buildW3CTokens(spec);
   }
 
-  return [
+  // Build a deduplicated component manifest from every component detected across all source schemas
+  const seen = new Set<string>();
+  const componentManifest = sources.flatMap(({ url, schema }) => {
+    const hostname = shortUrl(url);
+    const all = [
+      ...schema.components,
+      ...schema.structure.pages.flatMap((p) => p.unique_components),
+    ];
+    return all.filter((c) => {
+      const key = `${hostname}:${c.name_inferred}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).map((c) => ({
+      name: c.name_inferred,
+      from: hostname,
+      variants: c.variants,
+      props: c.props_inferred,
+      styling: c.styling_approach,
+      shared: c.is_shared,
+    }));
+  });
+
+  // Page structure: what sections exist and what layout patterns are used
+  const sections = [...new Set(sources.flatMap((s) => s.schema.structure.sections_global))];
+  const layouts = [...new Set(
+    sources.flatMap((s) => s.schema.structure.pages.map((p) => p.layout_pattern))
+  )].filter(Boolean);
+
+  // Real interaction patterns from the schema (hover states, transitions)
+  const hoverPatterns = sources.flatMap((s) =>
+    s.schema.interactions.global_hover_patterns.slice(0, 5).map((p) => ({
+      element: p.element,
+      changes: p.changes,
+      duration_ms: p.motion?.duration_ms,
+      easing: p.motion?.easing,
+    }))
+  );
+
+  // Synthesized token summary
+  const colors = spec.colors.slice(0, 10)
+    .map((c) => `${String(c.value)} — ${c.rationale} (from ${shortUrl(c.source_url)})`)
+    .join("\n  ");
+  const fonts = spec.typography
+    .map((t) => `${String(t.value)} — ${t.rationale}`)
+    .join(", ");
+  const spacingData = spec.spacing?.value as ReconstructSchema["design"]["spacing"] | undefined;
+  const spacingBase = spacingData?.base_unit ?? 8;
+  const radii = spec.border_radius?.value as number[] | undefined;
+  const motionData = spec.motion?.value as ReconstructSchema["design"]["motion"] | undefined;
+  const durations = motionData?.durations_ms?.join("ms, ") ?? "";
+  const easings = motionData?.easings?.join(", ") ?? "";
+  const dominantStyling = mostCommonStyling(sources);
+
+  const prompt = `Generate ${framework} components for a new project.
+
+## Creative Intent
+${intent}
+
+## Constraints
+${constraints ?? "None"}
+
+## Synthesized Design Tokens
+Colors:
+  ${colors}
+Typography: ${fonts}
+Spacing base unit: ${spacingBase}px
+Border radius scale: ${(radii ?? []).join(", ")}px
+${durations ? `Transitions: ${durations}ms | Easings: ${easings}` : ""}
+
+## Components detected in source sites
+${componentManifest.length > 0
+    ? JSON.stringify(componentManifest, null, 2)
+    : "No shared components detected in source sites."}
+
+## Global page sections found across sources
+${sections.length > 0 ? sections.join(", ") : "none detected"}
+
+## Layout patterns found
+${layouts.length > 0 ? layouts.join(", ") : "none detected"}
+
+## Interaction patterns (from real CSS/hover analysis)
+${hoverPatterns.length > 0 ? JSON.stringify(hoverPatterns, null, 2) : "none detected"}
+
+## Dominant styling approach used by sources
+${dominantStyling}
+
+## Requirements
+- Generate the components most relevant to the intent AND the components actually detected in source sites above
+- Use the synthesized design tokens exactly — do not invent colors, sizes, or fonts
+- Match the variants and prop signatures detected in the source data
+- Use ${framework} with TypeScript where appropriate
+- Apply the detected interaction patterns (hover transitions, focus states) using the exact durations and easings above
+- Styling: match the dominant approach (${dominantStyling}) unless constraints override
+- Component content should be props, not hardcoded text
+- Include a layout/shell component if page sections or layout patterns were detected
+
+Return ONLY code, fenced with \`\`\`${frameworkLang(framework)}\`\`\`.`;
+
+  try {
+    const response = await extra.sendRequest(
+      {
+        method: "sampling/createMessage",
+        params: {
+          messages: [{ role: "user", content: { type: "text", text: prompt } }],
+          systemPrompt: `You are a UI engineer generating ${framework} components from a multi-site design synthesis. Build from the real detected component data and design tokens provided — do not use generic placeholder templates.`,
+          maxTokens: 6000,
+        },
+      } as any,
+      CreateMessageResultSchema
+    );
+
+    if (response.content && "text" in response.content && response.content.text.trim()) {
+      return response.content.text;
+    }
+  } catch (err) {
+    console.error("[cannibalize] Component generation failed:", err);
+  }
+
+  return buildTokenFallback(spec, framework, intent);
+}
+
+function frameworkLang(framework: string): string {
+  const map: Record<string, string> = {
+    react: "tsx", vue: "vue", svelte: "svelte", html: "html", tokens: "json",
+  };
+  return map[framework] ?? "typescript";
+}
+
+function mostCommonStyling(sources: Array<{ schema: ReconstructSchema }>): string {
+  const counts = new Map<string, number>();
+  for (const { schema } of sources) {
+    for (const s of schema.technology.styling) {
+      if (s !== "unknown") counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+  }
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  return sorted[0]?.[0] ?? "plain CSS";
+}
+
+// W3C Design Token format (works with Style Dictionary, Figma Tokens, etc.)
+function buildW3CTokens(spec: CannibalizedSpec): string {
+  const tokens: Record<string, Record<string, unknown>> = {};
+
+  tokens.color = {};
+  spec.colors.slice(0, 12).forEach((c, i) => {
+    tokens.color[`color-${i + 1}`] = { $value: String(c.value), $type: "color", $description: c.rationale };
+  });
+
+  tokens.fontFamily = {};
+  spec.typography.forEach((t, i) => {
+    tokens.fontFamily[`font-${i + 1}`] = { $value: String(t.value), $type: "fontFamily", $description: t.rationale };
+  });
+
+  const spacingData = spec.spacing?.value as ReconstructSchema["design"]["spacing"] | undefined;
+  if (spacingData?.scale?.length) {
+    tokens.spacing = {};
+    spacingData.scale.slice(0, 10).forEach((s, i) => {
+      (tokens.spacing as Record<string, unknown>)[`space-${i + 1}`] = { $value: `${s}px`, $type: "dimension" };
+    });
+  }
+
+  const radii = spec.border_radius?.value as number[] | undefined;
+  if (radii?.length) {
+    tokens.borderRadius = {};
+    radii.forEach((r, i) => {
+      (tokens.borderRadius as Record<string, unknown>)[`radius-${i + 1}`] = { $value: `${r}px`, $type: "dimension" };
+    });
+  }
+
+  const motionData = spec.motion?.value as ReconstructSchema["design"]["motion"] | undefined;
+  if (motionData?.durations_ms?.length) {
+    tokens.duration = {};
+    motionData.durations_ms.forEach((d, i) => {
+      (tokens.duration as Record<string, unknown>)[`duration-${i + 1}`] = { $value: `${d}ms`, $type: "duration" };
+    });
+  }
+
+  return "```json\n" + JSON.stringify(tokens, null, 2) + "\n```";
+}
+
+function buildTokenFallback(spec: CannibalizedSpec, framework: string, intent: string): string {
+  const colors = spec.colors.slice(0, 12);
+  const spacingData = spec.spacing?.value as ReconstructSchema["design"]["spacing"] | undefined;
+  const radii = spec.border_radius?.value as number[] | undefined;
+  const motionData = spec.motion?.value as ReconstructSchema["design"]["motion"] | undefined;
+
+  const lines = [
     "```css",
-    `/* Cannibalized Button — intent: ${intent.slice(0, 60)} */`,
-    `.cann-btn {`,
-    `  font-family: ${fontFamily};`,
-    `  border-radius: ${radius}px;`,
-    `  background: ${primaryColor};`,
-    `  color: white;`,
-    `  border: none;`,
-    `  padding: 10px 20px;`,
-    `  transition: all ${duration}ms ${easing};`,
-    `  cursor: pointer;`,
+    `/* AI component generation unavailable — design tokens only */`,
+    `/* Intent: ${intent.slice(0, 80)} */`,
+    `:root {`,
+    ...colors.map((c, i) => `  --color-${i + 1}: ${String(c.value)}; /* ${c.rationale} */`),
+    ...spec.typography.map((t, i) => `  --font-${i + 1}: "${String(t.value)}"; /* ${t.rationale} */`),
+    ...(spacingData?.scale?.slice(0, 8)?.map((s, i) => `  --space-${i + 1}: ${s}px;`) ?? []),
+    ...(radii?.map((r, i) => `  --radius-${i + 1}: ${r}px;`) ?? []),
+    ...(motionData?.durations_ms?.map((d, i) => `  --duration-${i + 1}: ${d}ms;`) ?? []),
     `}`,
-    `.cann-btn:hover { opacity: 0.88; transform: translateY(-1px); }`,
-    `.cann-btn--accent { background: ${accentColor}; }`,
     "```",
-  ].join("\n");
+    "",
+    `> Component generation requires MCP sampling support (\`sampling/createMessage\`). Connect via Claude Desktop or Cursor to enable.`,
+  ];
+  return lines.join("\n");
 }
 
 function shortUrl(url: string): string {

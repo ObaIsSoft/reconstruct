@@ -136,6 +136,7 @@ const FRAMEWORK_SIGNALS: FrameworkSignal[] = [
 
 interface StylingSignal {
   name: string;
+  minSignals?: number; // default 1 — how many signals must match
   signals: Array<{ in: "html" | "css"; pattern: RegExp }>;
 }
 
@@ -143,14 +144,20 @@ const STYLING_SIGNALS: StylingSignal[] = [
   {
     name: "tailwind",
     signals: [
-      { in: "html", pattern: /class="[^"]*(?:flex|grid|bg-|text-|p-\d|rounded|border-|shadow-|space-)[^"]*"/ },
+      // Responsive/state prefixes are Tailwind-exclusive — sm:, md:, lg:, hover:, dark: etc.
+      { in: "html", pattern: /class="[^"]*(?:sm:|md:|lg:|xl:|2xl:|hover:|focus:|dark:)[\w-]+[^"]*"/ },
       { in: "css", pattern: /@tailwind\s+(?:base|components|utilities)/ },
+      // Tailwind arbitrary value syntax: w-[320px], bg-[#ff5733]
+      { in: "html", pattern: /class="[^"]*[\w-]+\[[\w#%.,\s]+\][^"]*"/ },
     ],
   },
   {
     name: "bootstrap",
+    // Bootstrap requires 2+ signals — btn-primary alone is used by many custom CSS frameworks
+    minSignals: 2,
     signals: [
-      { in: "html", pattern: /class="[^"]*(?:col-|row|container|btn-|navbar-)[^"]*"/ },
+      { in: "html", pattern: /class="[^"]*col-(?:xs|sm|md|lg|xl|xxl)-\d+[^"]*"/ },
+      { in: "html", pattern: /class="[^"]*btn-(?:primary|secondary|success|danger|warning|info|dark|light|outline-\w+)[^"]*"/ },
       { in: "html", pattern: /bootstrap(?:\.min)?\.css/ },
     ],
   },
@@ -236,7 +243,14 @@ const LIB_SIGNALS: Array<{ name: string; pattern: RegExp }> = [
   { name: "lottie",           pattern: /lottie(?:-web)?/ },
   { name: "aos",              pattern: /aos\.js|data-aos=/ },
   { name: "locomotive-scroll",pattern: /locomotive-scroll/ },
+  { name: "lenis",            pattern: /lenis(?:\.min)?\.js|from\s+['"]@studio-freight\/lenis['"]|new\s+Lenis\(/ },
   { name: "splittype",        pattern: /split-type|SplitType/ },
+  { name: "shadcn/ui",        pattern: /data-radix-|class="[^"]*(?:radix-|cmdk-)[^"]*"/ },
+  { name: "tanstack/query",   pattern: /@tanstack\/(?:react-)?query/ },
+  { name: "clerk",            pattern: /clerk(?:\.dev|\.com|js)|ClerkProvider/ },
+  { name: "supabase",         pattern: /supabase(?:\.com|\.js)|createClient.*supabase/ },
+  { name: "prismic",          pattern: /prismic(?:\.io|\.js)|@prismicio/ },
+  { name: "contentful",       pattern: /contentful(?:\.com)?|createClient.*contentful/ },
 ];
 
 // ── Rendering strategy detection ──────────────────────────────────────────────
@@ -278,30 +292,31 @@ export function detectMetaFramework(html: string): string | null {
 export function detectTechStack(html: string, cssTexts: string[]): TechStack {
   const cssAll = cssTexts.join("\n");
 
-  // Framework
+  // Framework — require at least 2 matching signals for frameworks with many weak patterns,
+  // but allow a single strong (dedicated) signal to match alone.
+  // Single-signal frameworks (remix, sveltekit) have distinctive enough tokens.
   let framework = "unknown";
   for (const fw of FRAMEWORK_SIGNALS) {
-    const matched = fw.signals.every((sig) => {
+    const matchCount = fw.signals.filter((sig) => {
       const source = sig.in === "css" ? cssAll : html;
       return sig.pattern.test(source);
-    }) || fw.signals.some((sig) => {
-      const source = sig.in === "css" ? cssAll : html;
-      return sig.pattern.test(source);
-    });
-    if (matched) {
+    }).length;
+    const needed = fw.signals.length === 1 ? 1 : Math.min(2, fw.signals.length);
+    if (matchCount >= needed) {
       framework = fw.name;
       break;
     }
   }
 
-  // Styling (can be multiple)
+  // Styling (can be multiple) — respect minSignals threshold per entry
   const styling = STYLING_SIGNALS
-    .filter(({ signals }) =>
-      signals.some((sig) => {
+    .filter(({ signals, minSignals = 1 }) => {
+      const matchCount = signals.filter((sig) => {
         const source = sig.in === "css" ? cssAll : html;
         return sig.pattern.test(source);
-      })
-    )
+      }).length;
+      return matchCount >= minSignals;
+    })
     .map(({ name }) => name);
 
   // State management

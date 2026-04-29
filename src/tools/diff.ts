@@ -141,11 +141,19 @@ function buildDiffReport(
 
   // Design changes
   const designChanges: string[] = [];
-  const oldColorCount = archived.tokens.colors.length;
-  const newColorCount = current.design.colors.palette.length;
-  if (Math.abs(oldColorCount - newColorCount) > 2) {
-    const direction = newColorCount > oldColorCount ? "expanded" : "reduced";
-    designChanges.push(`**Color palette ${direction}:** ${oldColorCount} → ${newColorCount} colors`);
+
+  // Compare actual color values, not just count
+  const oldColors = new Set(archived.tokens.colors.map((c) => c.value.toLowerCase()));
+  const newColors = new Set(current.design.colors.palette.map((c) => c.value.toLowerCase()));
+  const addedColors = [...newColors].filter((c) => !oldColors.has(c));
+  const removedColors = [...oldColors].filter((c) => !newColors.has(c));
+  if (addedColors.length > 0 || removedColors.length > 0) {
+    if (addedColors.length > 0)
+      designChanges.push(`**Colors added (${addedColors.length}):** ${addedColors.slice(0, 5).map((c) => `\`${c}\``).join(" ")}`);
+    if (removedColors.length > 0)
+      designChanges.push(`**Colors removed (${removedColors.length}):** ${removedColors.slice(0, 5).map((c) => `\`${c}\``).join(" ")}`);
+    if (removedColors.length >= oldColors.size * 0.6)
+      designChanges.push(`**Near-complete rebrand:** ${removedColors.length} of ${oldColors.size} old colors replaced`);
   }
 
   const oldBaseFont = archived.tokens.typography.families[0]?.family ?? "unknown";
