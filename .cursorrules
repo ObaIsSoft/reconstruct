@@ -32,3 +32,18 @@ You are working on **Reconstruct**, an open-source Model Context Protocol (MCP) 
 ## Common Tasks
 - **Adding a Tool**: Create `src/tools/name.ts`, export `registerNameTool(server)`, and call it in `src/index.ts`.
 - **Updating Schema**: Modify `src/schema/types.ts` and sync with `src/schema/config.ts` if needed.
+
+## File Map
+- `src/index.ts` — MCP server entry point, tool registration
+- `src/tools/` — one file per MCP tool (`analyze`, `explain`, `clone`, `cannibalize`, `diff`, `hypothetical`)
+- `src/scrapers/cascade.ts` — scraper selection waterfall (WebFetch → Lightpanda → Firecrawl → Browserbase)
+- `src/extractors/merge.ts` — assembles CrawlResult into ReconstructSchema
+- `src/schema/types.ts` — central TypeScript types
+- `src/schema/config.ts` — Zod config schemas + `loadConfig()` with merge logic
+- `src/cache/store.ts` — read/write JSON cache keyed by URL hash
+
+## Config Resolution Order
+Global (`~/.reconstruct/config.json`) → Project (`reconstruct.config.json`) → Env vars → Per-call `loadConfig(overrides)`
+
+## Environment Variables
+`FIRECRAWL_API_KEY`, `FIRECRAWL_API_URL`, `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID`, `LIGHTPANDA_URL`, `RECONSTRUCT_PREFER`, `RECONSTRUCT_MAX_PAGES`, `RECONSTRUCT_CACHE_DIR`

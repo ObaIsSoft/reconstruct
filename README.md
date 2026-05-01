@@ -124,6 +124,37 @@ reconstruct_diff({ url: "https://stripe.com", snapshot_date: "20230101" })
 
 Reconstruct reports how many pages it analyzed vs. discovered. When `max_pages` is hit, you'll see a warning. Increase the limit in config for fuller coverage — completeness is configured by you.
 
+## Environment variables
+
+API keys can be injected via `"env"` in the MCP config block instead of a config file:
+
+| Variable | Effect |
+|---|---|
+| `FIRECRAWL_API_KEY` | Enables Firecrawl scraper |
+| `BROWSERBASE_API_KEY` | Enables Browserbase scraper |
+| `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
+| `LIGHTPANDA_URL` | Lightpanda WebSocket URL (default: `http://localhost:9222`) |
+| `RECONSTRUCT_PREFER` | Force a scraper: `auto` / `webfetch` / `lightpanda` / `firecrawl` / `browserbase` |
+| `RECONSTRUCT_MAX_PAGES` | Override `crawl.max_pages` |
+| `RECONSTRUCT_CACHE_DIR` | Override the cache directory |
+
+Example:
+
+```json
+{
+  "mcpServers": {
+    "reconstruct": {
+      "command": "npx",
+      "args": ["reconstruct-mcp"],
+      "env": {
+        "FIRECRAWL_API_KEY": "fc-your-key-here",
+        "RECONSTRUCT_MAX_PAGES": "100"
+      }
+    }
+  }
+}
+```
+
 ## Build from source
 
 ```bash
