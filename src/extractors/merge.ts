@@ -9,6 +9,7 @@ import { buildPageNode, detectGridSystem, parseNavItems, detectAccessibilityGrad
 import { detectTechStack } from "./tech.js";
 import { extractInteractions } from "./interactions.js";
 import { inferPhilosophy } from "./philosophy.js";
+import { extractContent } from "./content.js";
 import { createHash } from "crypto";
 
 // ── Shared component detection ────────────────────────────────────────────────
@@ -135,7 +136,8 @@ export async function mergeCrawlToSchema(
   const interactions = extractInteractions(allCss, homePage.html);
   const grid = detectGridSystem(homePage.html, allCss);
   const accessibilityGrade = detectAccessibilityGrade(homePage.html, allCss);
-  const philosophy = inferPhilosophy(cssTokens, homePage.html, accessibilityGrade);
+  const contentTokens = extractContent(pages, allCss);
+  const philosophy = inferPhilosophy(cssTokens, homePage.html, accessibilityGrade, contentTokens);
 
   // Build per-page nodes
   const pageNodes = pages.map((p) => buildPageNode(p, baseHostname));
@@ -230,6 +232,8 @@ export async function mergeCrawlToSchema(
     },
 
     components: sharedComponents,
+
+    content: contentTokens,
 
     philosophy,
 

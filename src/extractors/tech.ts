@@ -130,6 +130,42 @@ const FRAMEWORK_SIGNALS: FrameworkSignal[] = [
       { in: "html", pattern: /data-framer-/ },
     ],
   },
+  {
+    name: "hubspot-cms",
+    signals: [
+      { in: "html", pattern: /\/hubfs\// },
+      { in: "html", pattern: /hs-scripts|hsforms|_hsp=|hsCta/ },
+      { in: "html", pattern: /hubspot\.com|hub\.spot/ },
+    ],
+  },
+  {
+    name: "ghost",
+    signals: [
+      { in: "html", pattern: /content\.ghost\.io|ghost\.io/ },
+      { in: "html", pattern: /ghost-theme/ },
+    ],
+  },
+  {
+    name: "squarespace",
+    signals: [
+      { in: "html", pattern: /squarespace\.com|sqsp\.net/ },
+      { in: "html", pattern: /data-wid=|squarespace-cdn/ },
+    ],
+  },
+  {
+    name: "wix",
+    signals: [
+      { in: "html", pattern: /wixstatic\.com|wix\.com/ },
+      { in: "html", pattern: /data-mesh-id|wixui-/ },
+    ],
+  },
+  {
+    name: "contentful-cms",
+    signals: [
+      { in: "html", pattern: /contentful\.com/ },
+      { in: "html", pattern: /ctfl-/ },
+    ],
+  },
 ];
 
 // ── Styling signals ───────────────────────────────────────────────────────────

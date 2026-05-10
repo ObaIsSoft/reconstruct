@@ -91,6 +91,22 @@ export function registerAnalyzeTool(server: McpServer): void {
   );
 }
 
+// ── Response truncation ───────────────────────────────────────────────────────
+// The full schema is written to cache before formatSchema is called.
+// Strip raw.css_text from the MCP response to keep it within context limits.
+
+function truncateForResponse(schema: ReconstructSchema): ReconstructSchema {
+  return {
+    ...schema,
+    raw: {
+      ...schema.raw,
+      css_text: schema.raw.css_text.map((c) =>
+        c.length > 500 ? c.slice(0, 500) + `… [${c.length - 500} chars truncated — full text in cache]` : c
+      ),
+    },
+  };
+}
+
 // ── Output formatter ──────────────────────────────────────────────────────────
 
 function formatSchema(
@@ -154,7 +170,7 @@ function formatSchema(
     "",
     "---",
     "```json",
-    JSON.stringify(schema, null, 2),
+    JSON.stringify(truncateForResponse(schema), null, 2),
     "```",
   ];
 

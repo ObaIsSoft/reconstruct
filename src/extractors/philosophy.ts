@@ -4,6 +4,7 @@
 
 import type { DesignDensity, AccessibilityGrade } from "../schema/types.js";
 import type { CSSTokens } from "./css.js";
+import type { ContentTokens } from "./content.js";
 
 export interface DesignPhilosophy {
   design_school: string[];
@@ -142,9 +143,12 @@ export function deriveDesignCharacter(tokens: CSSTokens, html: string): string[]
     descriptors.push("chromatic expression");
   }
 
-  if (tokens.dark_mode && dark.length > light.length) {
+  // Determine dark-first from actual color luminance balance, not from whether
+  // dark: Tailwind utilities are present (they appear in all dark-mode-capable Tailwind sites).
+  const isDarkFirst = dark.length > light.length + 1;
+  if (isDarkFirst && tokens.dark_mode) {
     descriptors.push("dark-first");
-  } else if (!tokens.dark_mode && dark.length > light.length + 2) {
+  } else if (isDarkFirst && !tokens.dark_mode) {
     descriptors.push("dark palette, light-mode only");
   }
 
@@ -156,7 +160,11 @@ export function deriveDesignCharacter(tokens: CSSTokens, html: string): string[]
 
   // ── Surface language ─────────────────────────────────────────────────────────
   const hasBackdropFilter = /backdrop-filter/.test(html);
-  const hasInsetShadow = tokens.elevation.some((e) => e.value.includes("inset"));
+  // Require actual pixel-value inset shadow — CSS variable names (e.g. var(--tw-inset-shadow))
+  // contain "inset" as a substring but are not neumorphic shadows.
+  const hasInsetShadow = tokens.elevation.some(
+    (e) => /\binset\b/.test(e.value) && /\d+px\s+\d+px/.test(e.value)
+  );
   const hasFlatShadow = tokens.elevation.some((e) => /\d+px \d+px 0(?:px)?\b/.test(e.value));
   const hasColouredShadow = tokens.elevation.some((e) => /rgba\([^)]*[1-9],/.test(e.value) && !/rgba\(\s*0\s*,\s*0\s*,\s*0/.test(e.value));
   const elevationLevels = tokens.elevation.length;
@@ -273,7 +281,15 @@ export function deriveDesignCharacter(tokens: CSSTokens, html: string): string[]
 // Personality traits emerge from dimensional combinations, not threshold matching
 // against a fixed vocabulary. The dimension evidence determines the trait.
 
-export function derivePersonality(tokens: CSSTokens, html: string): string[] {
+// Returns true when site content signals a serious/editorial/literary context
+// that should suppress personality traits inferred from incidental CSS alone
+function isSeriousContentContext(content?: ContentTokens): boolean {
+  if (!content) return false;
+  const text = (content.site_purpose + " " + content.headings.join(" ")).toLowerCase();
+  return /portfolio|essay|writing|editorial|literary|journal|story|stories|art|poetry|prose|fiction|nonfiction|memoir|author|writer|photography|film|gallery|museum|archive|research|academic|thesis|dissertation|publication|magazine|review|criticism/.test(text);
+}
+
+export function derivePersonality(tokens: CSSTokens, html: string, content?: ContentTokens): string[] {
   const traits: string[] = [];
   const colors = tokens.colors;
   const namedFamilies = tokens.typography.families.filter((f) => !isGenericFamily(f.family));
@@ -281,12 +297,14 @@ export function derivePersonality(tokens: CSSTokens, html: string): string[] {
   const saturated = colors.filter((c) => isSaturated(c.value));
   const warm = colors.filter((c) => isWarm(c.value));
   const dark = colors.filter((c) => isDark(c.value));
+  const light = colors.filter((c) => isLight(c.value));
   const hasSerif = namedFamilies.some((f) => isSerifFamily(f.family));
   const hasMono = namedFamilies.some((f) => isMonoFamily(f.family, f.role));
   const maxScale = tokens.typography.scale.length > 0 ? Math.max(...tokens.typography.scale) : 0;
   const minDur = tokens.motion.durations_ms.length > 0 ? Math.min(...tokens.motion.durations_ms) : null;
   const hasPhysicalMotion = tokens.motion.patterns.some((p) => ["bounce", "spring", "float"].includes(p));
   const hasCustomEasing = tokens.motion.easings.some((e) => /cubic-bezier/.test(e));
+  const seriousContent = isSeriousContentContext(content);
 
   // Authoritative: serif type + restrained saturation + structured hierarchy
   if (hasSerif && saturated.length <= 1 && tokens.typography.scale.length >= 4) {
@@ -300,11 +318,16 @@ export function derivePersonality(tokens: CSSTokens, html: string): string[] {
 
   // Playful: physical/bouncy motion + any chromatic saturation
   // OR expressive radius (rounded forms) + multi-color palette
-  const hasExpressiveRadius = tokens.border_radius.filter((r) => r >= 16 && r < 50).length > 0;
-  if (hasPhysicalMotion && saturated.length >= 1) {
-    traits.push("playful");
-  } else if (hasExpressiveRadius && saturated.length >= 2) {
-    traits.push("playful");
+  // Suppressed when content signals serious/editorial context (bounce animation ≠ playful editorial site)
+  // Also suppressed on dark-dominant palettes — playful associations are light-mode traits.
+  const isDarkDominant = dark.length > light.length + 3;
+  if (!seriousContent && !isDarkDominant) {
+    const hasExpressiveRadius = tokens.border_radius.filter((r) => r >= 16 && r < 50).length > 0;
+    if (hasPhysicalMotion && saturated.length >= 1) {
+      traits.push("playful");
+    } else if (hasExpressiveRadius && saturated.length >= 2) {
+      traits.push("playful");
+    }
   }
 
   // Energetic: fast transitions are the required signal — animations existing isn't enough
@@ -391,10 +414,11 @@ export function inferHierarchyMethods(tokens: CSSTokens): string[] {
 export function inferPhilosophy(
   tokens: CSSTokens,
   html: string,
-  accessibilityGrade: AccessibilityGrade
+  accessibilityGrade: AccessibilityGrade,
+  content?: ContentTokens
 ): DesignPhilosophy {
   const design_school = deriveDesignCharacter(tokens, html);
-  const personality = derivePersonality(tokens, html);
+  const personality = derivePersonality(tokens, html, content);
 
   return {
     design_school: design_school.length > 0 ? design_school : ["undetermined — insufficient token signal"],

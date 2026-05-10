@@ -35,7 +35,7 @@ export const ScraperConfigSchema = z.object({
 export const OutputConfigSchema = z.object({
   // 1=newbie, 2=student, 3=designer, 4=developer, 5=AI/agent
   default_audience: z.number().min(1).max(5).default(4),
-  cache_ttl_hours: z.number().min(0).max(8760).default(24),
+  cache_ttl_hours: z.number().min(0).max(8760).default(168),
   cache_dir: z.string().default(DEFAULT_CACHE_DIR),
 });
 

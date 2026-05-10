@@ -83,18 +83,46 @@ export function detectGridSystem(html: string, cssTexts: string[]): {
           ? "table"
           : "unknown";
 
-  // Column count from grid-template-columns or repeat()
+  // Column count from CSS grid-template-columns or Tailwind grid-cols-N utilities in HTML
   let columns: number | null = null;
   const colMatch = full.match(/grid-template-columns\s*:\s*repeat\(\s*(\d+)/);
-  if (colMatch) columns = parseInt(colMatch[1]);
+  if (colMatch) {
+    columns = parseInt(colMatch[1]);
+  } else {
+    // Tailwind: class="grid grid-cols-3" or class="sm:grid-cols-4"
+    const twColMatch = html.match(/\bgrid-cols-(\d+)\b/);
+    if (twColMatch) columns = parseInt(twColMatch[1]);
+  }
 
-  // Max-width
+  // Max-width — scan all rule blocks, prefer layout-level container selectors,
+  // ignore component/utility values (< 500px)
   let max_width_px: number | null = null;
-  const mwMatch = full.match(/max-width\s*:\s*([\d.]+)(px|rem)/);
-  if (mwMatch) {
-    max_width_px = mwMatch[2] === "rem"
-      ? Math.round(parseFloat(mwMatch[1]) * 16)
-      : Math.round(parseFloat(mwMatch[1]));
+  const LAYOUT_SELECTOR_RE = /(?:body|main|\.(?:container|wrapper|layout|page|content|inner|site|center|max-w)|#(?:root|app|main|content|wrapper))\b/i;
+  const mwLayoutValues: number[] = [];
+  const mwFallbackValues: number[] = [];
+  for (const rm of full.matchAll(/([^{}]+)\{([^{}]*?)max-width\s*:\s*([\d.]+)(px|rem)[^{}]*?\}/gis)) {
+    const selector = rm[1].trim();
+    const raw = parseFloat(rm[3]);
+    const px = rm[4] === "rem" ? Math.round(raw * 16) : Math.round(raw);
+    if (px < 500 || px > 2560) continue;
+    if (LAYOUT_SELECTOR_RE.test(selector)) {
+      mwLayoutValues.push(px);
+    } else {
+      mwFallbackValues.push(px);
+    }
+  }
+  if (mwLayoutValues.length > 0) {
+    max_width_px = Math.max(...mwLayoutValues);
+  } else {
+    const layoutRange = mwFallbackValues.filter(v => v >= 900 && v <= 1600);
+    if (layoutRange.length > 0) {
+      // Most common value in layout range
+      const freq = new Map<number, number>();
+      for (const v of layoutRange) freq.set(v, (freq.get(v) ?? 0) + 1);
+      max_width_px = [...freq.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    } else if (mwFallbackValues.length > 0) {
+      max_width_px = Math.max(...mwFallbackValues);
+    }
   }
 
   // Breakpoints from media queries

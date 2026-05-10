@@ -16,6 +16,8 @@ function normalizeFwKey(fw: string): string {
     "next.js": "Next.js", nuxt: "Nuxt", sveltekit: "SvelteKit",
     astro: "Astro", remix: "Remix", gatsby: "Gatsby",
     react: "React", vue: "Vue", angular: "Angular", htmx: "HTMX",
+    "hubspot-cms": "hubspot-cms", ghost: "ghost",
+    squarespace: "squarespace", wix: "wix", "contentful-cms": "contentful-cms",
   };
   return aliases[fw.toLowerCase()] ?? fw;
 }
@@ -129,6 +131,36 @@ const FRAMEWORK_KB: Record<string, { role: string; implies: string; dev_note: st
     implies: "A deliberate rejection of JavaScript complexity. Typically a backend-first team (Python/Go/Ruby/PHP) who wants dynamic UIs without a JS framework.",
     dev_note: "Server returns HTML partials, not JSON. Browser history via hx-push-url. No client-side state management needed.",
     tradeoff: "Interactivity ceiling lower than JS frameworks. Complex client-side state is hard.",
+  },
+  "hubspot-cms": {
+    role: "HubSpot CMS Hub — content management tightly integrated with HubSpot CRM, marketing, and sales tools",
+    implies: "Marketing is running the site, not engineering. Drag-and-drop editor, HubL templating, and tight integration with HubSpot email, forms, and analytics. The site likely drives lead capture and nurture flows rather than being a product interface.",
+    dev_note: "Templates are HubL (HubSpot's Jinja-like language). CDN-served from HubSpot infrastructure (/hubfs/ paths). Custom modules are possible but design control is constrained by the CMS drag-and-drop model.",
+    tradeoff: "Deep HubSpot lock-in. Limited layout flexibility without developer involvement. High cost relative to alternatives. Performance can be inconsistent.",
+  },
+  "ghost": {
+    role: "Ghost CMS — headless publishing platform for blogs, newsletters, and membership sites",
+    implies: "Content is the product. Ghost is built around editorial publishing workflows: posts, tags, members, and Stripe-powered paid subscriptions. Typically used by independent creators, publishers, or teams that want a fast, minimal editorial CMS.",
+    dev_note: "Themes are Handlebars templates. Ghost's Content API enables headless consumption. Built-in email newsletter delivery. Member authentication and paywalling are first-class features.",
+    tradeoff: "Limited to content publishing. No custom data models or complex application logic. Less flexible than a headless CMS paired with a custom frontend.",
+  },
+  "squarespace": {
+    role: "Squarespace — all-in-one website builder for design-forward small businesses and creatives",
+    implies: "A non-technical owner built and maintains the site. Design templates are the primary differentiator — Squarespace's aesthetic is polished but constrained. Common for portfolios, restaurants, small retail, and service businesses.",
+    dev_note: "No direct code access at the framework level. Custom CSS and limited JS injection possible in settings. Pages are server-rendered by Squarespace infrastructure. Exporting to another platform requires a full rebuild.",
+    tradeoff: "No custom backend logic. Template constraints limit differentiation. Ongoing subscription required. Performance is platform-controlled.",
+  },
+  "wix": {
+    role: "Wix — visual drag-and-drop website builder with optional Wix Velo JavaScript layer",
+    implies: "Built by a non-technical owner or agency using Wix's visual editor. Wix Velo (previously Corvid) enables server-side JavaScript, database collections, and APIs — bridging the gap between a builder and a lightweight app platform.",
+    dev_note: "Wix Velo enables custom backend logic (.jsw serverless functions), database collections, and dynamic pages. All assets served from Wix CDN (wixstatic.com). Design is tied to Wix's rendering engine — migrating away requires a full rebuild.",
+    tradeoff: "Wix Velo is capable but non-standard. Deep platform lock-in. SEO and performance constrained relative to custom-built sites.",
+  },
+  "contentful-cms": {
+    role: "Contentful — API-first headless CMS used as a content backend, decoupled from the frontend",
+    implies: "Content is managed separately from presentation. The frontend (Next.js, Astro, or similar) fetches content from Contentful's APIs at build or request time. Signals a team that wanted editorial workflow and structured content without coupling it to a specific frontend stack.",
+    dev_note: "Content is modeled as Content Types in Contentful and consumed via REST or GraphQL APIs. Rich text is delivered as a JSON AST requiring a renderer. Preview environments use draft/published states. Contentful SDK or fetch calls will be in the frontend codebase.",
+    tradeoff: "No visual page building — layout and design are entirely frontend-controlled. Cost scales with usage. Migrating content models is painful.",
   },
 };
 
@@ -1251,6 +1283,269 @@ function interpretPhilosophy(schema: ReconstructSchema, tier: Tier): string {
   return lines.filter(l => l !== undefined).join("\n");
 }
 
+// ── Visual language synthesis ─────────────────────────────────────────────────
+// Answers: what does this design COMMUNICATE? Grounded in actual schema values —
+// image role distribution, color character, type choices, structure, media presence.
+
+type ContentSection = {
+  site_purpose: string;
+  headings: string[];
+  images: Array<{ src: string; alt: string; role: string; is_gif: boolean; pages_present: string[] }>;
+  background_images: string[];
+  media: Array<{ type: string; src: string }>;
+  favicon: { url: string; format: string; is_default: boolean } | null;
+};
+
+function inferDomain(purpose: string): string {
+  const p = purpose.toLowerCase();
+  if (/\b(?:security|endpoint|compliance|threat|vulnerability|siem|soc|xdr|edr|mdm|identity|sso|iam)\b/.test(p)) return "security/IT";
+  if (/\b(?:shop|buy|cart|store|checkout|ecommerce|e-commerce)\b/.test(p)) return "e-commerce";
+  if (/\b(?:portfolio|creative|designer|photographer|filmmaker|artist|writer|author)\b/.test(p)) return "creative-portfolio";
+  if (/\b(?:saas|platform|software|dashboard|analytics|crm|erp)\b/.test(p)) return "b2b-saas";
+  if (/\b(?:agency|studio|consulting|services|solutions)\b/.test(p)) return "agency/services";
+  if (/\b(?:blog|magazine|editorial|journal|publication|news|media)\b/.test(p)) return "editorial/media";
+  return "";
+}
+
+function colorCharacter(colors: Array<{ value: string }>): { warm: number; cool: number; neutral: number; saturated: number } {
+  let warm = 0, cool = 0, neutral = 0, saturated = 0;
+  for (const c of colors) {
+    const hex = c.value.replace("#", "");
+    if (hex.length !== 6) continue;
+    const r = parseInt(hex.slice(0, 2), 16) / 255;
+    const g = parseInt(hex.slice(2, 4), 16) / 255;
+    const b = parseInt(hex.slice(4, 6), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    if (d < 0.08) { neutral++; continue; }
+    saturated++;
+    const h = (max === r ? ((g - b) / d + 6) % 6
+             : max === g ? (b - r) / d + 2
+             : (r - g) / d + 4) * 60;
+    if (h < 75 || h > 300) warm++;
+    else if (h > 160 && h < 280) cool++;
+  }
+  return { warm, cool, neutral, saturated };
+}
+
+function interpretVisualLanguage(schema: ReconstructSchema, tier: Tier): string {
+  if (tier === "succinct" || tier === "ai") return "";
+  const content = (schema as any).content as ContentSection | undefined;
+  if (!content) return "";
+
+  const { design } = schema;
+  const namedFamilies = design.typography.families.filter(f => !CSS_GENERICS.has(f.family));
+  const lines: string[] = ["## What This Design Communicates"];
+
+  // ── Core message ──────────────────────────────────────────────────────────
+  if (content.site_purpose) {
+    const domain = inferDomain(content.site_purpose);
+    lines.push(`**Core message:** "${content.site_purpose}"${domain ? `  \nDomain: **${domain}**` : ""}`);
+  }
+
+  // ── Image strategy ─────────────────────────────────────────────────────────
+  const imgs = content.images;
+  if (imgs.length > 0) {
+    const roleCount: Record<string, number> = {};
+    for (const img of imgs) roleCount[img.role] = (roleCount[img.role] ?? 0) + 1;
+    const sorted = Object.entries(roleCount).sort((a, b) => b[1] - a[1]);
+    const topRole = sorted[0]?.[0] ?? "unknown";
+    const topCount = sorted[0]?.[1] ?? 0;
+    const gifCount = imgs.filter(i => i.is_gif).length;
+    const hasFileBackgrounds = content.background_images.some(u => /\.(jpg|jpeg|png|webp|gif|svg)/i.test(u));
+
+    const strategyMap: Record<string, string> = {
+      "product":     `Product screenshots and UI captures dominate (${topCount} of ${imgs.length}). The primary visual argument is the product itself — show before tell.`,
+      "hero":        `Hero images lead (${topCount} of ${imgs.length}). Emotional or contextual first impression before product detail.`,
+      "portrait":    `Portrait photography leads (${topCount} of ${imgs.length}). Human presence is the primary visual weight — faces carry trust.`,
+      "illustration":`Illustration is the dominant type (${topCount} of ${imgs.length}). Abstract or complex concepts are visualized rather than photographed.`,
+      "icon":        `Icons dominate (${topCount} of ${imgs.length}) — a complex feature taxonomy communicated through symbol, not photography.`,
+      "decoration":  `Decorative images lead (${topCount} of ${imgs.length}) — visual atmosphere over direct product communication.`,
+      "unknown":     `${imgs.length} images across mixed or unclassified roles.`,
+    };
+    const secondary = sorted[1] ? ` Supported by ${sorted[1][1]} ${sorted[1][0]} image${sorted[1][1] > 1 ? "s" : ""}.` : "";
+    lines.push(`**Image strategy:** ${strategyMap[topRole] ?? strategyMap["unknown"]}${secondary}`);
+    if (gifCount > 0) lines.push(`  ${gifCount} animated GIF${gifCount > 1 ? "s" : ""} — motion used inline, outside CSS animation.`);
+    if (!hasFileBackgrounds) lines.push(`  Background fills are CSS-only (gradients or flat color) — no photographic backgrounds.`);
+  } else {
+    lines.push(`**Image strategy:** No inline images detected. Visual identity relies on CSS-only treatments (color, gradient, type).`);
+  }
+
+  // ── Color as tone ─────────────────────────────────────────────────────────
+  const char = colorCharacter(design.colors.palette);
+  const domain = inferDomain(content.site_purpose ?? "");
+  const dominant = char.warm >= char.cool && char.warm > char.neutral ? "warm"
+    : char.cool > char.warm && char.cool > char.neutral ? "cool"
+    : "neutral";
+
+  let colorReading = "";
+  if (dominant === "warm" && char.saturated > 0) {
+    colorReading = `Warm, chromatic palette (${char.warm} warm vs ${char.cool} cool tokens in the ${design.colors.palette.length}-token set).`;
+    if (domain === "security/IT") colorReading += ` Security and IT products most commonly use cool blues and grays for authority — warm palette is a less common chromatic approach in this category.`;
+    else if (domain === "b2b-saas") colorReading += ` Warm tones create energy and approachability against the category's typical cool-neutral defaults.`;
+  } else if (dominant === "cool" && char.saturated > 0) {
+    colorReading = `Cool, chromatic palette (${char.cool} cool vs ${char.warm} warm tokens).`;
+    if (domain === "security/IT" || domain === "b2b-saas") colorReading += ` Aligns with category convention — cool tones signal stability and precision.`;
+  } else if (char.neutral > char.saturated * 1.5) {
+    colorReading = `Neutral-dominant palette (${char.neutral} near-neutral vs ${char.saturated} chromatic tokens). Contrast and type carry hierarchy rather than hue.`;
+  }
+  if (colorReading) lines.push(`**Color tone:** ${colorReading}`);
+
+  // ── Type as brand signal ───────────────────────────────────────────────────
+  const typeSignals: string[] = [];
+  for (const f of namedFamilies.slice(0, 3)) {
+    const isMono = /mono|code|courier|consolas|jetbrains|fira|ibm plex/i.test(f.family);
+    const isSerif = /serif|garamond|georgia|baskerville|cormorant|playfair|lora|merriweather/i.test(f.family) && !/sans/i.test(f.family);
+    const isDisplay = /display|poster|clash|cabinet|satoshi|zodiak|editorial/i.test(f.family);
+    if (isMono && f.role !== "mono") {
+      typeSignals.push(`**${f.family}** (monospace in ${f.role} role) — positions as technical, precision-oriented, developer-adjacent`);
+    } else if (isSerif) {
+      typeSignals.push(`**${f.family}** (serif, ${f.role}) — signals editorial authority or traditional craft`);
+    } else if (isDisplay) {
+      typeSignals.push(`**${f.family}** (display, ${f.role}) — signals brand distinctiveness`);
+    } else if (f.source === "self-hosted") {
+      typeSignals.push(`**${f.family}** (${f.role}, self-hosted) — paid or proprietary license; type treated as a brand asset, not a utility choice`);
+    }
+  }
+  if (typeSignals.length > 0) lines.push(`**Type as brand:** ${typeSignals.join("; ")}.`);
+
+  // ── Media investment ───────────────────────────────────────────────────────
+  if (content.media.length > 0) {
+    const videos = content.media.filter(m => m.type === "video" || m.type === "embedded-video").length;
+    const audio = content.media.filter(m => m.type === "audio").length;
+    const parts = [
+      videos > 0 ? `${videos} video${videos > 1 ? "s" : ""}` : "",
+      audio > 0 ? `${audio} audio` : "",
+    ].filter(Boolean).join(", ");
+    lines.push(`**Media investment:** ${parts} alongside ${imgs.length} images. Video presence signals investment in product narrative, demos, or storytelling beyond static documentation.`);
+  }
+
+  // ── Structural confidence ─────────────────────────────────────────────────
+  const maxType = design.typography.scale.length > 0 ? Math.max(...design.typography.scale) : 0;
+  const spacingMax = design.spacing.scale.length > 0 ? Math.max(...design.spacing.scale) : 0;
+  const structParts: string[] = [];
+  if (maxType >= 64) structParts.push(`${maxType}px type ceiling — type at this scale functions as graphic architecture, not just a text label`);
+  if (spacingMax >= 80) structParts.push(`${spacingMax}px maximum spacing value — generous vertical rhythm between sections`);
+  if (design.grid.max_width_px && design.grid.max_width_px >= 1200) structParts.push(`${design.grid.max_width_px}px content max-width — wide enough for feature-dense marketing layouts`);
+  if (structParts.length > 0) lines.push(`**Structure:** ${structParts.join("; ")}.`);
+
+  return lines.join("\n\n");
+}
+
+// ── Content section ───────────────────────────────────────────────────────────
+
+function interpretContent(schema: ReconstructSchema, tier: Tier): string {
+  const content = (schema as any).content as {
+    site_purpose: string;
+    headings: string[];
+    images: Array<{ src: string; alt: string; role: string; is_gif: boolean; pages_present: string[] }>;
+    background_images: string[];
+    media: Array<{ type: string; src: string; pages_present: string[] }>;
+    favicon: { url: string; format: string; is_default: boolean } | null;
+  } | undefined;
+
+  if (!content) return "";
+
+  if (tier === "ai") {
+    return `## Content\n\`\`\`json\n${JSON.stringify(content, null, 2)}\n\`\`\``;
+  }
+
+  const lines: string[] = ["## Content & Visual Assets"];
+
+  // Site purpose
+  if (content.site_purpose) {
+    lines.push(`**Site purpose:** ${content.site_purpose}`);
+  }
+
+  // Favicon
+  if (content.favicon) {
+    const fav = content.favicon;
+    if (fav.is_default) {
+      lines.push(`**Favicon:** \`${fav.url}\` — framework default placeholder, no custom brand icon set.`);
+    } else {
+      lines.push(`**Favicon:** \`${fav.url}\` (${fav.format.toUpperCase()}) — custom brand icon present.`);
+    }
+  } else {
+    lines.push(`**Favicon:** none detected.`);
+  }
+
+  // Images
+  const imgs = content.images;
+  if (imgs.length > 0) {
+    const roleCount: Record<string, number> = {};
+    for (const img of imgs) roleCount[img.role] = (roleCount[img.role] ?? 0) + 1;
+    const gifCount = imgs.filter(i => i.is_gif).length;
+    const roleSummary = Object.entries(roleCount)
+      .sort((a, b) => b[1] - a[1])
+      .map(([role, n]) => `${n} ${role}`)
+      .join(", ");
+    lines.push(
+      `**Images:** ${imgs.length} found — ${roleSummary}` +
+      (gifCount > 0 ? ` (${gifCount} animated GIF${gifCount > 1 ? "s" : ""})` : "") + "."
+    );
+    const noAlt = imgs.filter(i => !i.alt).length;
+    const altGapRatio = imgs.length > 0 ? noAlt / imgs.length : 0;
+    if (noAlt > 0) {
+      const flagStr = altGapRatio > 0.25
+        ? ` **⚠ accessibility gap** — ${Math.round(altGapRatio * 100)}% of images are missing alt text.`
+        : ` (${noAlt} missing alt text)`;
+      lines.push(`  ${flagStr}`);
+    }
+    if (tier !== "succinct") {
+      const heroes = imgs.filter(i => i.role === "hero");
+      if (heroes.length > 0) {
+        const decodeAmp = (s: string) => s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"');
+        const heroNames = heroes.slice(0, 8).map(h => decodeAmp(h.src.split("/").pop() ?? h.src));
+        const more = heroes.length > 8 ? ` (+${heroes.length - 8} more)` : "";
+        lines.push(`  Hero image(s): ${heroNames.join(", ")}${more}.`);
+      }
+    }
+  } else {
+    lines.push(`**Images:** none detected in HTML (background-image via CSS: ${content.background_images.length > 0 ? content.background_images.length + " found" : "none"}).`);
+  }
+
+  // Background images — separate CSS gradient backgrounds from file images
+  if (content.background_images.length > 0 && tier !== "succinct") {
+    const decodeAmp = (s: string) => s.replace(/&amp;/g, "&");
+    const bgFiles = content.background_images.filter(u => !u.startsWith("data:"));
+    const sample = bgFiles.slice(0, 3).map(u => decodeAmp(u.split("/").pop() ?? u));
+    const more = bgFiles.length > 3 ? `…` : "";
+    lines.push(`**CSS background-images:** ${bgFiles.length} file-based — ${sample.join(", ")}${more}.`);
+  }
+
+  // Media
+  if (content.media.length > 0) {
+    const videos = content.media.filter(m => m.type === "video").length;
+    const audio = content.media.filter(m => m.type === "audio").length;
+    const embedded = content.media.filter(m => m.type === "embedded-video").length;
+    const parts = [
+      videos > 0 ? `${videos} video${videos > 1 ? "s" : ""}` : "",
+      audio > 0 ? `${audio} audio` : "",
+      embedded > 0 ? `${embedded} embedded video${embedded > 1 ? "s" : ""} (YouTube/Vimeo)` : "",
+    ].filter(Boolean);
+    lines.push(`**Media:** ${parts.join(", ")}.`);
+  } else {
+    lines.push(`**Media:** no video or audio detected.`);
+  }
+
+  // Sub-brand / content cluster signals
+  const subBrands = (content as any).sub_brand_signals as string[] | undefined;
+  if (subBrands && subBrands.length > 0 && tier !== "succinct") {
+    lines.push(
+      `**Content clusters detected:** \`${subBrands.join("`, `")}\`` +
+      ` — repeated path segments in image URLs suggesting product lines, campaigns, or editorial sections.`
+    );
+  }
+
+  // Headings sample
+  if (content.headings.length > 0 && tier !== "succinct") {
+    const sample = content.headings.slice(0, 5);
+    lines.push(`**Page headings (sample):**`);
+    for (const h of sample) lines.push(`  - "${h}"`);
+  }
+
+  return lines.join("\n");
+}
+
 // ── Main builder ───────────────────────────────────────────────────────────────
 
 export function buildExplanation(schema: ReconstructSchema, tier: string, focus: string): string {
@@ -1262,6 +1557,7 @@ export function buildExplanation(schema: ReconstructSchema, tier: string, focus:
     if (focus === "all" || focus === "design") aiOutput.design = schema.design;
     if (focus === "all" || focus === "interactions") aiOutput.interactions = schema.interactions;
     if (focus === "all" || focus === "philosophy") aiOutput.philosophy = schema.philosophy;
+    if (focus === "all") aiOutput.content = (schema as any).content;
     aiOutput.standouts = findStandouts(schema);
     return `\`\`\`json\n${JSON.stringify(aiOutput, null, 2)}\n\`\`\``;
   }
@@ -1305,6 +1601,12 @@ export function buildExplanation(schema: ReconstructSchema, tier: string, focus:
   if (focus === "all" || focus === "design") sections.push(interpretDesign(schema, t));
   if (focus === "all" || focus === "interactions") sections.push(interpretInteractions(schema, t));
   if (focus === "all" || focus === "philosophy") sections.push(interpretPhilosophy(schema, t));
+  if (focus === "all") {
+    const visualLang = interpretVisualLanguage(schema, t);
+    if (visualLang) sections.push(visualLang);
+    const contentSection = interpretContent(schema, t);
+    if (contentSection) sections.push(contentSection);
+  }
 
   return sections.join("\n\n---\n\n");
 }

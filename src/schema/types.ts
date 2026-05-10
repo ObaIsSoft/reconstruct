@@ -106,6 +106,28 @@ export interface PageNode {
   confidence: number;           // 0-1
 }
 
+export type ImageRole = "portrait" | "hero" | "product" | "illustration" | "icon" | "decoration" | "portfolio" | "unknown";
+
+export interface ImageAsset {
+  src: string;
+  alt: string;
+  role: ImageRole;
+  is_gif: boolean;
+  pages_present: string[];
+}
+
+export interface MediaAsset {
+  type: "video" | "audio" | "embedded-video";
+  src: string;
+  pages_present: string[];
+}
+
+export interface FaviconInfo {
+  url: string;
+  format: "svg" | "png" | "ico" | "webp" | "unknown";
+  is_default: boolean;   // true when it's a framework placeholder (vite.svg, next.svg, etc.)
+}
+
 export interface CoverageReport {
   urls_discovered: number;
   urls_crawled: number;
@@ -191,6 +213,15 @@ export interface ReconstructSchema {
   };
 
   components: ComponentToken[];  // shared_components (appear on 3+ pages)
+
+  content?: {
+    site_purpose: string;        // from title + h1 + meta description
+    headings: string[];          // sampled H1/H2 text across pages
+    images: ImageAsset[];
+    background_images: string[]; // CSS background-image URLs
+    media: MediaAsset[];
+    favicon: FaviconInfo | null;
+  };
 
   philosophy: {
     design_school: string[];    // ["minimalism", "neo-brutalism", "glassmorphism"]

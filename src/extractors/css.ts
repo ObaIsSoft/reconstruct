@@ -42,6 +42,66 @@ function rgbToHex(r: number, g: number, b: number): string {
   return `#${[r, g, b].map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
 }
 
+// ── Gradient color extraction ─────────────────────────────────────────────────
+// Extracts hex/rgb/hsl color stops from linear/radial/conic-gradient().
+// These are often the primary chromatic expression of a design but invisible to
+// flat CSS rule scanning because they live inside property values, not names.
+
+function addHexFromText(text: string, map: Map<string, number>, weight: number): void {
+  for (const hm of text.matchAll(/#([0-9a-fA-F]{3,6})\b/g)) {
+    if (hm[1].length === 3 || hm[1].length === 6) {
+      const hex = `#${normalizeHex(hm[1])}`;
+      map.set(hex, (map.get(hex) ?? 0) + weight);
+    }
+  }
+  for (const rm of text.matchAll(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/g)) {
+    const hex = rgbToHex(+rm[1], +rm[2], +rm[3]);
+    map.set(hex, (map.get(hex) ?? 0) + weight);
+  }
+  for (const hm of text.matchAll(/hsla?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)%\s*,\s*(\d+(?:\.\d+)?)%/g)) {
+    const hex = hslToHex(+hm[1], +hm[2], +hm[3]);
+    map.set(hex, (map.get(hex) ?? 0) + weight);
+  }
+}
+
+function extractGradientColors(cssAll: string, varMap?: Map<string, string>): Map<string, number> {
+  const gradientColors = new Map<string, number>();
+  const gradRe = /(?:linear|radial|conic)-gradient\(/gi;
+  let m: RegExpExecArray | null;
+  while ((m = gradRe.exec(cssAll)) !== null) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    while (i < cssAll.length && depth > 0) {
+      if (cssAll[i] === "(") depth++;
+      else if (cssAll[i] === ")") depth--;
+      i++;
+    }
+    const content = cssAll.slice(m.index + m[0].length, i - 1);
+
+    // Direct color literals in the gradient content
+    addHexFromText(content, gradientColors, 2);
+
+    // Tailwind gradient system: linear-gradient(to right, var(--tw-gradient-stops))
+    // where --tw-gradient-stops expands to --tw-gradient-from ... --tw-gradient-to.
+    // Resolve the actual color variables to surface the real gradient palette.
+    if (varMap && /var\(--tw-gradient-stops\)/.test(content)) {
+      for (const varName of ["--tw-gradient-from", "--tw-gradient-via", "--tw-gradient-to"]) {
+        const resolved = resolveVar(varName, varMap);
+        if (resolved) addHexFromText(resolved, gradientColors, 3);
+      }
+    }
+
+    // Generic var() references in gradient stops
+    if (varMap) {
+      for (const vm of content.matchAll(/var\((--[\w-]+)\)/g)) {
+        const resolved = resolveVar(vm[1], varMap);
+        if (resolved) addHexFromText(resolved, gradientColors, 2);
+      }
+    }
+  }
+  return gradientColors;
+}
+
 // ── CSS variable resolution ───────────────────────────────────────────────────
 // Modern sites define colors/fonts as CSS custom properties and reference them
 // via var(). Without resolving these, the extractor misses most active usages.
@@ -167,6 +227,12 @@ export function extractColors(
     }
   }
 
+  // Pass 3: gradient color stops — linear/radial/conic-gradient() colors
+  const gradColors = extractGradientColors(full, varMap);
+  for (const [hex, weight] of gradColors) {
+    addColor(hex, "gradient", weight);
+  }
+
   // Fallback: if no CSS was extracted, sniff raw HTML/markdown for color values
   if (counts.size < 3 && fallbackContext && fallbackContext.length > 0) {
     for (const hm of fallbackContext.matchAll(HEX_RE)) {
@@ -231,7 +297,8 @@ export interface TypographySchema {
 export function extractTypography(
   cssTexts: string[],
   fallbackContext?: string,
-  varMap?: Map<string, string>
+  varMap?: Map<string, string>,
+  htmlContext?: string,
 ): TypographySchema {
   const full = cssTexts.join("\n");
   const analysisContext = full.length > 50 ? full : (fallbackContext ?? "");
@@ -274,7 +341,9 @@ export function extractTypography(
       } else {
         // Extract primary font name from the stack: "'Quicksand', sans-serif" → "Quicksand"
         const primary = raw.split(",")[0].replace(/['"]/g, "").trim();
-        if (primary && primary.length > 0 && !SYSTEM_FONTS_RE.test(primary)) {
+        if (/^(inherit|initial|unset|revert|none)$/i.test(primary)) {
+          // CSS keyword — not a font name, skip
+        } else if (primary && primary.length > 0 && !SYSTEM_FONTS_RE.test(primary)) {
           const existing = familyMap.get(primary) ?? { selectors: [], weights: new Set(), count: 0 };
           existing.selectors.push(selector.trim());
           existing.count++;
@@ -327,6 +396,29 @@ export function extractTypography(
     : lsUniq.some((s) => s.includes("em") && parseFloat(s) < 0) ? "tight"
     : lsUniq.some((s) => parseFloat(s) > 0.05) ? "loose"
     : "normal";
+
+  // Fallback for sites where rule-scanning found no fonts (e.g. all font-family
+  // declarations are behind unresolvable CSS variables, or the CSS was minimal).
+  // Extract from Google Fonts link tags in the HTML — these are explicit, intentional
+  // imports: fonts.googleapis.com/css2?family=Inter:wght@400;700
+  // This is detection, not guessing: if the browser requests it from Google Fonts, it's used.
+  // htmlContext is the raw HTML page — always search there for Google Fonts links.
+  // fallbackContext is CSS text when CSS exists, so it won't contain link tags.
+  const gfSource = htmlContext ?? (fallbackContext ?? "");
+  if (familyMap.size === 0 && gfSource) {
+    const gfRe = /fonts\.googleapis\.com\/css2?\?([^"'\s>]+)/gi;
+    for (const gfm of gfSource.matchAll(gfRe)) {
+      const qs = gfm[1];
+      for (const familyParam of qs.matchAll(/family=([^&:]+)/gi)) {
+        const name = decodeURIComponent(familyParam[1]).replace(/\+/g, " ").trim();
+        if (name && !SYSTEM_FONTS_RE.test(name)) {
+          const existing = familyMap.get(name) ?? { selectors: [], weights: new Set(), count: 0 };
+          existing.count++;
+          familyMap.set(name, existing);
+        }
+      }
+    }
+  }
 
   // Sort by occurrence count descending, cap at 5
   const families: FontToken[] = [...familyMap.entries()]
@@ -562,6 +654,33 @@ export function detectColorStrategy(
   return "analogous";
 }
 
+// ── Dark mode detection ───────────────────────────────────────────────────────
+// Count CSS declarations inside @media (prefers-color-scheme: dark) blocks.
+// A single-declaration block is typically a third-party component override (e.g.
+// a media player's focus ring variable). Site-level dark mode support produces
+// many declarations; requiring ≥ 3 eliminates false positives from embedded widgets.
+
+function countDarkModeDeclarations(css: string): number {
+  const mediaRe = /@media\s*\([^)]*prefers-color-scheme\s*:\s*dark[^)]*\)\s*\{/gi;
+  let total = 0;
+  let m: RegExpExecArray | null;
+  while ((m = mediaRe.exec(css)) !== null) {
+    // Walk the braces to find the end of this @media block
+    let depth = 1;
+    let i = m.index + m[0].length;
+    while (i < css.length && depth > 0) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}") depth--;
+      i++;
+    }
+    const block = css.slice(m.index + m[0].length, i - 1);
+    // Count declarations: lines containing "property: value"
+    const declarations = block.match(/[\w-]+\s*:/g);
+    total += declarations ? declarations.length : 0;
+  }
+  return total;
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export interface CSSTokens {
@@ -588,12 +707,18 @@ export function extractCSSTokens(cssTexts: string[], rawContext?: string): CSSTo
   const varMap = buildCssVarMap(analysisContext);
 
   const colors = extractColors(cssTexts, analysisContext, varMap);
-  const typography = extractTypography(cssTexts, analysisContext, varMap);
+  const typography = extractTypography(cssTexts, analysisContext, varMap, rawContext);
+
+  // dark_mode = true when the site has meaningful @media (prefers-color-scheme: dark)
+  // blocks — not just a single third-party component override (e.g. a media player's
+  // focus-ring variable). We count CSS declarations across all dark-mode blocks and
+  // require ≥ 3 to rule out incidental one-off inclusions.
+  const dark_mode = countDarkModeDeclarations(analysisContext) >= 3;
 
   return {
     colors,
     color_strategy: detectColorStrategy(colors),
-    dark_mode: analysisContext.includes("prefers-color-scheme") || analysisContext.includes("dark:"),
+    dark_mode,
     typography,
     spacing: extractSpacing(cssTexts),
     elevation: extractElevation(cssTexts),
