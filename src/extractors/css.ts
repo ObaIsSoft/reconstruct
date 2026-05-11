@@ -11,7 +11,9 @@ import type {
   ShadowToken,
   MotionToken,
   SpacingStrategy,
+  CSSBlock,
 } from "../schema/types.js";
+import { allText, firstPartyText } from "../schema/types.js";
 
 // ── Color extraction ──────────────────────────────────────────────────────────
 
@@ -694,35 +696,40 @@ export interface CSSTokens {
   motion: ReturnType<typeof extractMotion>;
 }
 
-export function extractCSSTokens(cssTexts: string[], rawContext?: string): CSSTokens {
-  const allCss = cssTexts.join("\n");
-  const analysisContext = allCss.length > 0 ? allCss : (rawContext ?? "");
+export function extractCSSTokens(blocks: CSSBlock[], rawContext?: string): CSSTokens {
+  const allTexts = allText(blocks);
+  const fpTexts = firstPartyText(blocks);
 
-  console.log(`[Reconstruct] Extracting tokens from ${cssTexts.length} CSS blocks (Total chars: ${allCss.length})`);
+  const allCss = allTexts.join("\n");
+  const fpCss = fpTexts.join("\n");
+  const analysisContext = allCss.length > 0 ? allCss : (rawContext ?? "");
+  const fpContext = fpCss.length > 0 ? fpCss : analysisContext;
+
+  console.log(`[Reconstruct] Extracting tokens from ${blocks.length} CSS blocks (${fpTexts.length} first-party, ${allTexts.length - fpTexts.length} third-party, total chars: ${allCss.length})`);
   if (allCss.length === 0 && analysisContext.length > 0) {
     console.log(`[Reconstruct] Low-fidelity fallback: Sniffing Design DNA from raw context (${analysisContext.length} chars)`);
   }
 
-  // Build CSS variable map once — shared by color and typography extractors
+  // Build CSS variable map from all CSS — vars defined anywhere may be used anywhere
   const varMap = buildCssVarMap(analysisContext);
 
-  const colors = extractColors(cssTexts, analysisContext, varMap);
-  const typography = extractTypography(cssTexts, analysisContext, varMap, rawContext);
+  const colors = extractColors(allTexts, analysisContext, varMap);
+  const typography = extractTypography(allTexts, analysisContext, varMap, rawContext);
 
-  // dark_mode = true when the site has meaningful @media (prefers-color-scheme: dark)
-  // blocks — not just a single third-party component override (e.g. a media player's
-  // focus-ring variable). We count CSS declarations across all dark-mode blocks and
-  // require ≥ 3 to rule out incidental one-off inclusions.
-  const dark_mode = countDarkModeDeclarations(analysisContext) >= 3;
+  // Dark mode: count declarations only in first-party CSS to avoid third-party
+  // components (media players, widgets) falsely triggering dark_mode: true.
+  const dark_mode = countDarkModeDeclarations(fpContext) >= 3;
 
   return {
     colors,
     color_strategy: detectColorStrategy(colors),
     dark_mode,
     typography,
-    spacing: extractSpacing(cssTexts),
-    elevation: extractElevation(cssTexts),
-    border_radius: extractBorderRadius(cssTexts),
-    motion: extractMotion(cssTexts),
+    // Elevation and motion use first-party only — third-party player/widget CSS
+    // inflates these with its own animation values and shadow layers.
+    spacing: extractSpacing(fpTexts.length > 0 ? fpTexts : allTexts),
+    elevation: extractElevation(fpTexts.length > 0 ? fpTexts : allTexts),
+    border_radius: extractBorderRadius(fpTexts.length > 0 ? fpTexts : allTexts),
+    motion: extractMotion(fpTexts.length > 0 ? fpTexts : allTexts),
   };
 }

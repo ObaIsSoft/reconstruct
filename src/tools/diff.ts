@@ -6,8 +6,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { loadConfig } from "../schema/config.js";
 import { readCache, writeCache } from "../cache/store.js";
 import { fetchWaybackSnapshots, fetchUrl, extractStylesheetUrls, fetchStylesheets } from "../scrapers/webfetch.js";
+import { allText } from "../schema/types.js";
 import { extractCSSTokens } from "../extractors/css.js";
 import { detectTechStack } from "../extractors/tech.js";
+import { extractHTMLSignals } from "../extractors/signals.js";
 import { inferPhilosophy } from "../extractors/philosophy.js";
 import { detectAccessibilityGrade } from "../extractors/merge.js";
 import type { ReconstructSchema } from "../schema/types.js";
@@ -72,9 +74,11 @@ export function registerDiffTool(server: McpServer): void {
 
       // Extract minimal schema from archived HTML
       const archivedCssUrls = extractStylesheetUrls(archived.body, target.snapshot_url);
-      const archivedCss = await fetchStylesheets(archivedCssUrls);
+      const snapshotHostname = new URL(target.snapshot_url).hostname;
+      const archivedCss = await fetchStylesheets(archivedCssUrls, snapshotHostname);
       const archivedTokens = extractCSSTokens(archivedCss);
-      const archivedTech = detectTechStack(archived.body, archivedCss);
+      const archivedSignals = extractHTMLSignals(archived.body, target.snapshot_url);
+      const archivedTech = detectTechStack(archived.body, allText(archivedCss), archivedSignals);
       const archivedAccessibility = detectAccessibilityGrade(archived.body, archivedCss);
       const archivedPhilosophy = inferPhilosophy(archivedTokens, archived.body, archivedAccessibility);
 

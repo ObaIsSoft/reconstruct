@@ -1,4 +1,5 @@
-import type { ImageAsset, ImageRole, MediaAsset, FaviconInfo } from "../schema/types.js";
+import type { ImageAsset, ImageRole, MediaAsset, FaviconInfo, CSSBlock } from "../schema/types.js";
+import { allText } from "../schema/types.js";
 import type { CascadePage } from "../scrapers/cascade.js";
 
 const DEFAULT_FAVICON_PATTERNS = [
@@ -226,7 +227,7 @@ export interface ContentTokens {
   sub_brand_signals: string[];   // repeated path segments in image URLs (product lines, campaigns, etc.)
 }
 
-export function extractContent(pages: CascadePage[], allCss: string[]): ContentTokens {
+export function extractContent(pages: CascadePage[], allCss: CSSBlock[]): ContentTokens {
   const home = pages[0];
   const favicon = extractFavicon(home.html);
 
@@ -268,7 +269,7 @@ export function extractContent(pages: CascadePage[], allCss: string[]): ContentT
     site_purpose: extractSitePurpose(home.html, home.title),
     headings: allHeadings,
     images: allImages,
-    background_images: extractBackgroundImages(allCss),
+    background_images: extractBackgroundImages(allText(allCss)),
     media: [...mediaMap.values()],
     favicon,
     sub_brand_signals: detectSubBrandSignals(allImages),

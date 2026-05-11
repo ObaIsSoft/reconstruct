@@ -1,5 +1,43 @@
 // Central data model — all 6 Reconstruct layers derive from this
 
+// ── CSS source attribution ─────────────────────────────────────────────────────
+// Every CSS string in the pipeline carries its source URL and origin.
+// Origin is computed once at fetch time: same hostname as the site = first-party,
+// anything else = third-party. Inline <style> tags are always first-party.
+// This flows through every extractor so any analysis can filter by origin.
+
+export type CSSOrigin = "first-party" | "third-party";
+
+export interface CSSBlock {
+  url: string;        // Absolute URL of the stylesheet, "inline:<pageUrl>" for <style> tags,
+                      // or "captured:<pageUrl>" for browser-engine-captured rules
+  text: string;       // Full CSS text content
+  origin: CSSOrigin;  // Determined at fetch time from URL hostname vs. site hostname
+}
+
+// ── Helpers — used by every extractor ────────────────────────────────────────
+
+export function allText(blocks: CSSBlock[]): string[] {
+  return blocks.map((b) => b.text);
+}
+
+export function firstPartyBlocks(blocks: CSSBlock[]): CSSBlock[] {
+  return blocks.filter((b) => b.origin === "first-party");
+}
+
+export function firstPartyText(blocks: CSSBlock[]): string[] {
+  return blocks.filter((b) => b.origin === "first-party").map((b) => b.text);
+}
+
+export function blockOrigin(url: string, siteHostname: string): CSSOrigin {
+  if (url.startsWith("inline:") || url.startsWith("captured:")) return "first-party";
+  try {
+    return new URL(url).hostname === siteHostname ? "first-party" : "third-party";
+  } catch {
+    return "third-party";
+  }
+}
+
 export type URLClass =
   | "static"      // /about, /pricing
   | "dynamic"     // /blog/[slug], /product/[id]

@@ -74,14 +74,21 @@ export async function fetchUrl(
 
 // ── CSS fetching ─────────────────────────────────────────────────────────────
 
+import { blockOrigin, type CSSBlock } from "../schema/types.js";
+
 export async function fetchStylesheets(
   stylesheetUrls: string[],
+  siteHostname: string,
   cookies?: string
-): Promise<string[]> {
+): Promise<CSSBlock[]> {
   const results = await Promise.all(
-    stylesheetUrls.map((url) => fetchUrl(url, { cookies }))
+    stylesheetUrls.map(async (url) => {
+      const r = await fetchUrl(url, { cookies });
+      if (!r.ok) return null;
+      return { url, text: r.body, origin: blockOrigin(url, siteHostname) } as CSSBlock;
+    })
   );
-  return results.filter((r) => r.ok).map((r) => r.body);
+  return results.filter((r): r is CSSBlock => r !== null);
 }
 
 // Extract <link rel="stylesheet"> hrefs from raw HTML

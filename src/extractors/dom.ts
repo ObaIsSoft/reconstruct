@@ -1,7 +1,8 @@
 // DOM extractor — page structure, sections, layout patterns, component inference
 // Works from raw HTML strings (no live DOM needed)
 
-import type { ComponentToken, NavItem, PageNode } from "../schema/types.js";
+import type { ComponentToken, NavItem, PageNode, CSSBlock } from "../schema/types.js";
+import { allText, firstPartyText } from "../schema/types.js";
 import { classifyUrl } from "../scrapers/cascade.js";
 import type { CascadePage } from "../scrapers/cascade.js";
 
@@ -61,14 +62,14 @@ export function detectLayoutPattern(html: string, sections: string[]): string {
 
 // ── Grid detection ────────────────────────────────────────────────────────────
 
-export function detectGridSystem(html: string, cssTexts: string[]): {
+export function detectGridSystem(html: string, cssBlocks: CSSBlock[]): {
   layout: "grid" | "flexbox" | "mixed" | "table" | "unknown";
   columns: number | null;
   max_width_px: number | null;
   breakpoints_px: number[];
   strictness: "strict" | "organic" | "unknown";
 } {
-  const full = cssTexts.join("\n");
+  const full = allText(cssBlocks).join("\n");
   const usesGrid = /display\s*:\s*grid/.test(full);
   const usesFlex = /display\s*:\s*flex/.test(full);
   const usesTable = /display\s*:\s*table/.test(full);
@@ -228,15 +229,18 @@ export function inferComponents(
 
 export function detectAccessibilityGrade(
   html: string,
-  cssTexts: string[]
+  cssBlocks: CSSBlock[]
 ): "A" | "AA" | "AAA" | "none" | "unknown" {
   const hasAriaLabels = /aria-label=/i.test(html);
   const hasAriaRoles = /role=["']\w+["']/i.test(html);
   const hasAltText = /<img[^>]+alt=["'][^"']+["']/i.test(html);
   const hasLandmarks = /<(?:main|nav|header|footer|aside)\b/i.test(html);
   const hasSkipLink = /skip(?:\s+to)?\s+(?:main|content)/i.test(html);
-  const hasFocusStyles = cssTexts.join("").includes(":focus");
-  const hasReducedMotion = cssTexts.join("").includes("prefers-reduced-motion");
+  // Use first-party CSS only — third-party components (media players, widgets)
+  // implement their own focus/motion styles which would inflate our accessibility score.
+  const fpCss = firstPartyText(cssBlocks).join("");
+  const hasFocusStyles = fpCss.includes(":focus");
+  const hasReducedMotion = fpCss.includes("prefers-reduced-motion");
 
   const score =
     (hasAriaLabels ? 1 : 0) +

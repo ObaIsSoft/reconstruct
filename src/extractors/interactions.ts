@@ -2,7 +2,8 @@
 // Input: CSS texts + HTML
 // Output: InteractionToken[], TransitionToken[], scroll behaviors, focus strategy
 
-import type { InteractionToken, TransitionToken } from "../schema/types.js";
+import type { InteractionToken, TransitionToken, CSSBlock } from "../schema/types.js";
+import { firstPartyText, allText } from "../schema/types.js";
 
 // ── Rule block parser ─────────────────────────────────────────────────────────
 
@@ -207,13 +208,17 @@ export interface InteractionProfile {
 }
 
 export function extractInteractions(
-  cssTexts: string[],
+  blocks: CSSBlock[],
   html: string
 ): InteractionProfile {
+  // Interaction patterns extracted from first-party CSS only — third-party components
+  // define their own hover/focus/transition rules which don't reflect the site's design.
+  const fpTexts = firstPartyText(blocks);
+  const useTexts = fpTexts.length > 0 ? fpTexts : allText(blocks);
   return {
-    global_hover_patterns: extractHoverPatterns(cssTexts),
-    focus_strategy: detectFocusStrategy(cssTexts, html),
-    scroll_behaviors: detectScrollBehaviors(html, cssTexts),
-    transitions: extractTransitions(cssTexts),
+    global_hover_patterns: extractHoverPatterns(useTexts),
+    focus_strategy: detectFocusStrategy(useTexts, html),
+    scroll_behaviors: detectScrollBehaviors(html, useTexts),
+    transitions: extractTransitions(useTexts),
   };
 }

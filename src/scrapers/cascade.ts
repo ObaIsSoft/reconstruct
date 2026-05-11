@@ -2,7 +2,7 @@
 // Decides which scraper(s) to use based on site characteristics and config.
 
 import { loadConfig, type DeepPartial, type ReconstructConfig } from "../schema/config.js";
-import { type URLClass } from "../schema/types.js";
+import { type URLClass, type CSSBlock } from "../schema/types.js";
 import {
   fetchUrl,
   fetchStylesheets,
@@ -81,9 +81,9 @@ export interface CascadePage {
   title: string;
   html: string;
   markdown: string;
-  css_text: string[];
+  css_text: CSSBlock[];
   stylesheet_urls: string[];
-  inline_styles: string[];
+  inline_styles: CSSBlock[];
   semantic_tree: string;
   nav_links: Array<{ href: string; label: string }>;
   footer_links: Array<{ href: string; label: string }>;
@@ -177,17 +177,20 @@ export async function scrapeSinglePage(
         ...(data.stylesheet_urls || [])
       ];
       const uniqueStylesheetUrls = [...new Set(stylesheetUrls)];
-      // Attempt Node-side fetch for any missing ones (optional fallback)
-      const fetchedCss = await fetchStylesheets(uniqueStylesheetUrls, cookies);
+      const fetchedCss = await fetchStylesheets(uniqueStylesheetUrls, new URL(url).hostname, cookies);
+      // Wrap any CSS text already captured by Crawl4AI (first-party by nature)
+      const c4aiCaptured: CSSBlock[] = (data.css_text || []).map((t: string) => ({
+        url: `captured:${url}`, text: t, origin: "first-party" as const,
+      }));
 
       return {
         url,
         title: extractTitle(data.html),
         html: data.html,
         markdown: data.markdown,
-        css_text: [...(data.css_text || []), ...fetchedCss],
+        css_text: [...c4aiCaptured, ...fetchedCss],
         stylesheet_urls: uniqueStylesheetUrls,
-        inline_styles: extractInlineStyles(data.html),
+        inline_styles: extractInlineStyles(data.html, url),
         semantic_tree: "", // Bridge.py currently doesn't map full semantic tree yet
         nav_links: extractNavLinks(data.html, url),
         footer_links: extractFooterLinks(data.html, url),
@@ -228,7 +231,7 @@ export async function scrapeSinglePage(
           ...extractStylesheetUrls(raw.body, url)
         ];
         const uniqueStylesheetUrls = [...new Set(stylesheetUrls)];
-        const cssText = await fetchStylesheets(uniqueStylesheetUrls, cookies);
+        const cssText = await fetchStylesheets(uniqueStylesheetUrls, new URL(url).hostname, cookies);
 
         return {
           url,
@@ -237,7 +240,7 @@ export async function scrapeSinglePage(
           markdown: "",
           css_text: cssText,
           stylesheet_urls: uniqueStylesheetUrls,
-          inline_styles: extractInlineStyles(bb.html),
+          inline_styles: extractInlineStyles(bb.html, url),
           semantic_tree: "",
           nav_links: [],
           footer_links: [],
@@ -277,16 +280,20 @@ export async function scrapeSinglePage(
       ...extractStylesheetUrls(raw.body, url)
     ];
     const uniqueStylesheetUrls = [...new Set(stylesheetUrls)];
-    const fetchedCss = await fetchStylesheets(uniqueStylesheetUrls, cookies);
+    const fetchedCss = await fetchStylesheets(uniqueStylesheetUrls, new URL(url).hostname, cookies);
+    // Lightpanda captures rules from the live CSSOM — always first-party
+    const lpCaptured: CSSBlock[] = lp.css_text.map((t) => ({
+      url: `captured:${url}`, text: t, origin: "first-party" as const,
+    }));
 
     return {
       url,
       title: lp.title,
       html: lp.html,
       markdown: lp.markdown,
-      css_text: [...lp.css_text, ...fetchedCss, ...lp.inline_styles],
+      css_text: [...lpCaptured, ...fetchedCss],
       stylesheet_urls: uniqueStylesheetUrls,
-      inline_styles: lp.inline_styles,
+      inline_styles: extractInlineStyles(lp.html, url),
       semantic_tree: lp.semantic_tree,
       nav_links: lp.nav_links,
       footer_links: lp.footer_links,
@@ -319,7 +326,7 @@ export async function scrapeSinglePage(
     if (fcResult.ok) {
         const result = fcResult.data;
         const stylesheetUrls = extractStylesheetUrls(result.page.html, url);
-        const cssText = await fetchStylesheets(stylesheetUrls, cookies);
+        const cssText = await fetchStylesheets(stylesheetUrls, new URL(url).hostname, cookies);
 
         return {
           url,
@@ -328,7 +335,7 @@ export async function scrapeSinglePage(
           markdown: result.page.markdown,
           css_text: cssText,
           stylesheet_urls: stylesheetUrls,
-          inline_styles: extractInlineStyles(result.page.html),
+          inline_styles: extractInlineStyles(result.page.html, url),
           semantic_tree: "",
           nav_links: [],
           footer_links: [],
@@ -359,15 +366,17 @@ export async function scrapeSinglePage(
       // Jina returns no HTML or CSS — use the raw WebFetch result (already fetched
       // at the top of this function) to extract stylesheets and structural data.
       const stylesheetUrls = raw.ok ? extractStylesheetUrls(raw.body, url) : [];
-      const cssText = stylesheetUrls.length > 0 ? await fetchStylesheets(stylesheetUrls, cookies) : [];
-      const rawInline = raw.ok ? extractInlineStyles(raw.body) : [];
+      const cssText = stylesheetUrls.length > 0
+        ? await fetchStylesheets(stylesheetUrls, new URL(url).hostname, cookies)
+        : [];
+      const rawInline = raw.ok ? extractInlineStyles(raw.body, url) : [];
 
       return {
         url,
         title: data.title || (raw.ok ? extractTitle(raw.body) : ""),
         html: raw.ok ? raw.body : "",
         markdown: data.markdown,
-        css_text: [...cssText, ...rawInline],
+        css_text: cssText,
         stylesheet_urls: stylesheetUrls,
         inline_styles: rawInline,
         semantic_tree: "",
@@ -385,7 +394,7 @@ export async function scrapeSinglePage(
 
   // Default: WebFetch only (static site)
   const stylesheetUrls = extractStylesheetUrls(raw.body, url);
-  const cssText = await fetchStylesheets(stylesheetUrls, cookies);
+  const cssText = await fetchStylesheets(stylesheetUrls, new URL(url).hostname, cookies);
 
   return {
     url,
@@ -394,7 +403,7 @@ export async function scrapeSinglePage(
     markdown: "",
     css_text: cssText,
     stylesheet_urls: stylesheetUrls,
-    inline_styles: extractInlineStyles(raw.body),
+    inline_styles: extractInlineStyles(raw.body, url),
     semantic_tree: "",
     nav_links: extractNavLinks(raw.body, url),
     footer_links: extractFooterLinks(raw.body, url),
@@ -529,7 +538,7 @@ export async function crawlSite(
       for (const fp of crawled.pages) {
         if (fp.url === startUrl) continue;  // already have homepage
         const stylesheetUrls = extractStylesheetUrls(fp.html, fp.url);
-        const cssText = await fetchStylesheets(stylesheetUrls, cookies);
+        const cssText = await fetchStylesheets(stylesheetUrls, hostname, cookies);
         pages.push({
           url: fp.url,
           title: fp.title,
@@ -537,7 +546,7 @@ export async function crawlSite(
           markdown: fp.markdown,
           css_text: cssText,
           stylesheet_urls: stylesheetUrls,
-          inline_styles: extractInlineStyles(fp.html),
+          inline_styles: extractInlineStyles(fp.html, fp.url),
           semantic_tree: "",
           nav_links: [],
           footer_links: [],
@@ -623,10 +632,11 @@ function extractTitle(html: string): string {
   return html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim() ?? "";
 }
 
-function extractInlineStyles(html: string): string[] {
+function extractInlineStyles(html: string, pageUrl: string): CSSBlock[] {
   return [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)]
     .map((m) => m[1].trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((text) => ({ url: `inline:${pageUrl}`, text, origin: "first-party" as const }));
 }
 
 function extractAllLinks(html: string, baseUrl: string): Array<{ href: string; label: string }> {

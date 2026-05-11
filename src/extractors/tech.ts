@@ -1,7 +1,18 @@
 // Tech stack detector — framework fingerprinting, lib detection, rendering strategy
-// Works from raw HTML + CSS text (no JS execution needed for most signals)
+// Primary evidence: HTMLSignals (class prefixes, custom elements, script URLs, data namespaces)
+// Secondary evidence: HTML attribute patterns for things that have no structural equivalent
+//
+// Design principle: no hardcoded library name lists drive detection.
+// Libraries are detected from what the HTML structurally contains:
+//   - CDN <script> URLs → exact package names
+//   - Class prefix clusters → component library boundaries
+//   - Custom element tags → web components
+//   - data-* namespaces → framework annotations
+// The only fixed vocabulary is FRAMEWORK_ATTR_SIGNALS — attributes so framework-specific
+// they have no structural analogue (e.g. __NEXT_DATA__, data-sveltekit-*).
 
 import type { RenderingStrategy } from "../schema/types.js";
+import type { HTMLSignals } from "./signals.js";
 
 export interface TechStack {
   framework: string;
@@ -12,296 +23,249 @@ export interface TechStack {
   meta_framework: string | null;
 }
 
-// ── Framework signals ─────────────────────────────────────────────────────────
+// ── Framework detection ───────────────────────────────────────────────────────
+// Each framework leaves distinctive HTML attributes or global JS markers.
+// These are high-specificity signals — a single match is enough.
 
-interface FrameworkSignal {
+interface FrameworkAttrSignal {
   name: string;
-  version_pattern?: RegExp;
-  signals: Array<{ in: "html" | "css" | "url"; pattern: RegExp }>;
+  patterns: RegExp[];   // all must appear OR any (controlled by `require`)
+  require: "any" | "all";
 }
 
-const FRAMEWORK_SIGNALS: FrameworkSignal[] = [
-  {
-    name: "next.js",
-    version_pattern: /"version"\s*:\s*"([^"]+)"/,
-    signals: [
-      { in: "html", pattern: /__NEXT_DATA__/ },
-      { in: "html", pattern: /next\/static/ },
-      { in: "html", pattern: /_next\/static/ },
-    ],
-  },
-  {
-    name: "nuxt",
-    signals: [
-      { in: "html", pattern: /window\.__nuxt__/ },
-      { in: "html", pattern: /__NUXT_JSONLD__/ },
-      { in: "html", pattern: /nuxt-link/ },
-      { in: "url", pattern: /\/_nuxt\// },
-    ],
-  },
-  {
-    name: "sveltekit",
-    signals: [
-      { in: "html", pattern: /data-sveltekit-/ },
-      { in: "html", pattern: /__sveltekit/ },
-      { in: "html", pattern: /svelte:component/ },
-    ],
-  },
-  {
-    name: "remix",
-    signals: [
-      { in: "html", pattern: /__remixContext/ },
-      { in: "html", pattern: /data-remix-/ },
-    ],
-  },
-  {
-    name: "gatsby",
-    signals: [
-      { in: "html", pattern: /___gatsby/ },
-      { in: "html", pattern: /gatsby-image/ },
-      { in: "url", pattern: /\/static\/[a-f0-9]+\// },
-    ],
-  },
-  {
-    name: "astro",
-    signals: [
-      { in: "html", pattern: /astro-island/ },
-      { in: "html", pattern: /data-astro-/ },
-      { in: "html", pattern: /astro:page-load/ },
-    ],
-  },
-  {
-    name: "vue",
-    signals: [
-      { in: "html", pattern: /data-v-[a-f0-9]+/ },
-      { in: "html", pattern: /v-bind:|v-on:|v-if|v-for/ },
-      { in: "html", pattern: /id="app"/ },
-    ],
-  },
-  {
-    name: "react",
-    signals: [
-      { in: "html", pattern: /data-reactroot/ },
-      { in: "html", pattern: /data-react-/ },
-      { in: "html", pattern: /react-dom/ },
-      { in: "html", pattern: /__react/ },
-    ],
-  },
-  {
-    name: "angular",
-    signals: [
-      { in: "html", pattern: /ng-version/ },
-      { in: "html", pattern: /\bang-/ },
-      { in: "html", pattern: /\[\(ngModel\)\]/ },
-    ],
-  },
-  {
-    name: "htmx",
-    signals: [
-      { in: "html", pattern: /hx-get|hx-post|hx-target/ },
-      { in: "html", pattern: /htmx\.js/ },
-    ],
-  },
-  {
-    name: "wordpress",
-    signals: [
-      { in: "html", pattern: /wp-content\/themes/ },
-      { in: "html", pattern: /wp-includes/ },
-    ],
-  },
-  {
-    name: "shopify",
-    signals: [
-      { in: "html", pattern: /cdn\.shopify\.com/ },
-      { in: "html", pattern: /Shopify\.theme/ },
-    ],
-  },
-  {
-    name: "webflow",
-    signals: [
-      { in: "html", pattern: /data-wf-/ },
-      { in: "html", pattern: /webflow\.js/ },
-    ],
-  },
-  {
-    name: "framer",
-    signals: [
-      { in: "html", pattern: /framerusercontent\.com/ },
-      { in: "html", pattern: /data-framer-/ },
-    ],
-  },
-  {
-    name: "hubspot-cms",
-    signals: [
-      { in: "html", pattern: /\/hubfs\// },
-      { in: "html", pattern: /hs-scripts|hsforms|_hsp=|hsCta/ },
-      { in: "html", pattern: /hubspot\.com|hub\.spot/ },
-    ],
-  },
-  {
-    name: "ghost",
-    signals: [
-      { in: "html", pattern: /content\.ghost\.io|ghost\.io/ },
-      { in: "html", pattern: /ghost-theme/ },
-    ],
-  },
-  {
-    name: "squarespace",
-    signals: [
-      { in: "html", pattern: /squarespace\.com|sqsp\.net/ },
-      { in: "html", pattern: /data-wid=|squarespace-cdn/ },
-    ],
-  },
-  {
-    name: "wix",
-    signals: [
-      { in: "html", pattern: /wixstatic\.com|wix\.com/ },
-      { in: "html", pattern: /data-mesh-id|wixui-/ },
-    ],
-  },
-  {
-    name: "contentful-cms",
-    signals: [
-      { in: "html", pattern: /contentful\.com/ },
-      { in: "html", pattern: /ctfl-/ },
-    ],
-  },
+const FRAMEWORK_ATTR_SIGNALS: FrameworkAttrSignal[] = [
+  // Next.js embeds a JSON payload with its own key — unmistakable
+  { name: "next.js",    patterns: [/__NEXT_DATA__/],                    require: "any" },
+  // Nuxt injects window.__nuxt__ or its JSON payload
+  { name: "nuxt",       patterns: [/window\.__nuxt__|__NUXT_JSONLD__/], require: "any" },
+  // SvelteKit: data-sveltekit-* attributes on <a> tags + __sveltekit global
+  { name: "sveltekit",  patterns: [/data-sveltekit-|__sveltekit/],      require: "any" },
+  // Remix: __remixContext JSON
+  { name: "remix",      patterns: [/__remixContext/],                    require: "any" },
+  // Astro: astro-island web component
+  { name: "astro",      patterns: [/astro-island|data-astro-/],         require: "any" },
+  // Gatsby: ___gatsby global
+  { name: "gatsby",     patterns: [/___gatsby/],                        require: "any" },
+  // Angular: ng-version attribute on root element
+  { name: "angular",    patterns: [/ng-version/],                       require: "any" },
+  // React: data-reactroot (legacy) or __react internal
+  { name: "react",      patterns: [/data-reactroot|__react/],           require: "any" },
+  // Vue: data-v-* scoped CSS attributes
+  { name: "vue",        patterns: [/data-v-[a-f0-9]+/],                 require: "any" },
+  // HTMX: hx-* directives
+  { name: "htmx",       patterns: [/hx-get=|hx-post=|hx-target=/],     require: "any" },
+  // Webflow: data-wf-* attributes
+  { name: "webflow",    patterns: [/data-wf-/],                         require: "any" },
+  // Framer: framerusercontent.com assets
+  { name: "framer",     patterns: [/framerusercontent\.com/],           require: "any" },
+  // WordPress: wp-content path
+  { name: "wordpress",  patterns: [/wp-content\/themes/],               require: "any" },
+  // Shopify: cdn.shopify.com
+  { name: "shopify",    patterns: [/cdn\.shopify\.com/],                require: "any" },
+  // HubSpot CMS: /hubfs/ path or hs-scripts
+  { name: "hubspot-cms",patterns: [/\/hubfs\/|hs-scripts|hsCta/],       require: "any" },
+  // Ghost: content.ghost.io
+  { name: "ghost",      patterns: [/content\.ghost\.io|ghost\.io/],     require: "any" },
+  // Squarespace: squarespace.com CDN
+  { name: "squarespace",patterns: [/squarespace\.com|sqsp\.net/],       require: "any" },
+  // Wix: wixstatic.com
+  { name: "wix",        patterns: [/wixstatic\.com|data-mesh-id/],      require: "any" },
 ];
 
-// ── Styling signals ───────────────────────────────────────────────────────────
+function detectFramework(html: string, signals: HTMLSignals): string {
+  // 1. HTML attribute patterns (framework-injected markers)
+  for (const { name, patterns, require: req } of FRAMEWORK_ATTR_SIGNALS) {
+    const matches = patterns.filter((p) => p.test(html));
+    if (req === "any" && matches.length > 0) return name;
+    if (req === "all" && matches.length === patterns.length) return name;
+  }
 
-interface StylingSignal {
-  name: string;
-  minSignals?: number; // default 1 — how many signals must match
-  signals: Array<{ in: "html" | "css"; pattern: RegExp }>;
+  // 2. Build tool → implies meta-framework (e.g. sveltekit/vite → sveltekit already caught above)
+  // If we reach here and have a build tool, use it as a hint
+  if (signals.build_tool?.startsWith("next")) return "next.js";
+  if (signals.build_tool?.startsWith("sveltekit")) return "sveltekit";
+  if (signals.build_tool?.startsWith("nuxt")) return "nuxt";
+  if (signals.build_tool?.startsWith("astro")) return "astro";
+  if (signals.build_tool?.startsWith("gatsby")) return "gatsby";
+
+  // 3. Custom elements can disambiguate SPA frameworks
+  if (signals.custom_elements.includes("astro-island")) return "astro";
+
+  return "unknown";
 }
 
-const STYLING_SIGNALS: StylingSignal[] = [
-  {
-    name: "tailwind",
-    signals: [
-      // Responsive/state prefixes are Tailwind-exclusive — sm:, md:, lg:, hover:, dark: etc.
-      { in: "html", pattern: /class="[^"]*(?:sm:|md:|lg:|xl:|2xl:|hover:|focus:|dark:)[\w-]+[^"]*"/ },
-      { in: "css", pattern: /@tailwind\s+(?:base|components|utilities)/ },
-      // Tailwind arbitrary value syntax: w-[320px], bg-[#ff5733]
-      { in: "html", pattern: /class="[^"]*[\w-]+\[[\w#%.,\s]+\][^"]*"/ },
-    ],
-  },
-  {
-    name: "bootstrap",
-    // Bootstrap requires 2+ signals — btn-primary alone is used by many custom CSS frameworks
-    minSignals: 2,
-    signals: [
-      { in: "html", pattern: /class="[^"]*col-(?:xs|sm|md|lg|xl|xxl)-\d+[^"]*"/ },
-      { in: "html", pattern: /class="[^"]*btn-(?:primary|secondary|success|danger|warning|info|dark|light|outline-\w+)[^"]*"/ },
-      { in: "html", pattern: /bootstrap(?:\.min)?\.css/ },
-    ],
-  },
-  {
-    name: "css-modules",
-    signals: [
-      { in: "html", pattern: /class="[^"]*_[A-Z][a-zA-Z]+_[a-z0-9]{4,}/ },
-    ],
-  },
-  {
-    name: "styled-components",
-    signals: [
-      { in: "html", pattern: /class="[^"]*sc-[a-zA-Z0-9]+/ },
-    ],
-  },
-  {
-    name: "emotion",
-    signals: [
-      { in: "html", pattern: /class="[^"]*css-[a-zA-Z0-9]+/ },
-    ],
-  },
-  {
-    name: "sass/scss",
-    signals: [
-      { in: "css", pattern: /\/\*.*\.scss.*\*\// },
-      { in: "html", pattern: /\.scss/ },
-    ],
-  },
-  {
-    name: "unocss",
-    signals: [
-      { in: "html", pattern: /__unocss/ },
-      { in: "html", pattern: /data-vite-dev-id="[^"]*unocss/ },
-    ],
-  },
-  {
-    name: "shadcn/ui",
-    signals: [
-      { in: "html", pattern: /class="[^"]*(?:radix-|data-\[state\])[^"]*"/ },
-      { in: "html", pattern: /data-radix-/ },
-    ],
-  },
+// ── Styling system detection ──────────────────────────────────────────────────
+// Evidence hierarchy:
+//   1. CSS @tailwind directive (definitive)
+//   2. Tailwind responsive/state prefixes in class attributes (sm:, hover:, dark:)
+//   3. Tailwind arbitrary value syntax (w-[320px])
+//   4. CSS Modules hashed class names
+//   5. CSS-in-JS runtime class names (css-HASH, sc-HASH)
+
+function detectStyling(html: string, cssAll: string): string[] {
+  const found: string[] = [];
+
+  // Tailwind
+  const hasTwDirective = /@tailwind\s+(?:base|components|utilities)/.test(cssAll);
+  const hasTwPrefixes = /class=["'][^"']*(?:sm:|md:|lg:|xl:|2xl:|hover:|focus:|dark:)[\w-]+/.test(html);
+  const hasTwArbitrary = /class=["'][^"']*[\w-]+\[[\w#%.,\s-]+\]/.test(html);
+  if (hasTwDirective || hasTwPrefixes || hasTwArbitrary) found.push("tailwind");
+
+  // Bootstrap: requires col-{breakpoint}-{n} grid classes AND btn-* classes
+  const hasBootstrapGrid = /class=["'][^"']*col-(?:xs|sm|md|lg|xl|xxl)-\d+/.test(html);
+  const hasBootstrapBtn  = /class=["'][^"']*btn-(?:primary|secondary|success|danger|warning|info|dark|light|outline)/.test(html);
+  if (hasBootstrapGrid && hasBootstrapBtn) found.push("bootstrap");
+
+  // CSS Modules: hashed class names like _Button_abc123_4xyz
+  if (/class=["'][^"']*_[A-Z][a-zA-Z]+_[a-z0-9]{4,}/.test(html)) found.push("css-modules");
+
+  // styled-components: sc-* runtime classes
+  if (/class=["'][^"']*sc-[a-zA-Z0-9]+/.test(html)) found.push("styled-components");
+
+  // Emotion: css-* runtime classes
+  if (/class=["'][^"']*css-[a-zA-Z0-9]+/.test(html)) found.push("emotion");
+
+  // UnoCSS
+  if (/__unocss/.test(html)) found.push("unocss");
+
+  // Vanilla Extract: _[a-z0-9]+__ pattern
+  if (/class=["'][^"']*[a-z0-9]+__[a-z0-9]+/.test(html)) found.push("vanilla-extract");
+
+  return found.length > 0 ? found : ["unknown"];
+}
+
+// ── Library detection ─────────────────────────────────────────────────────────
+// Built entirely from HTMLSignals — no hardcoded name list.
+//
+// Sources (in priority order):
+//   1. CDN script URLs  → exact package name (most reliable)
+//   2. Class prefix clusters → resolved library name or raw prefix
+//   3. Custom element names → library hint from element tag
+//   4. data-* namespaces → framework/library annotation
+
+const CUSTOM_ELEMENT_BRANDS: Record<string, string> = {
+  // Media players
+  "media-player": "vidstack",
+  "media-provider": "vidstack",
+  "lite-youtube": "lite-youtube",
+  "mux-player": "mux-player",
+  "wistia-player": "wistia",
+  // Carousels
+  "swiper-container": "swiper",
+  "swiper-slide": "swiper",
+  "embla-carousel": "embla-carousel",
+  // Maps
+  "mapbox-gl": "mapbox-gl",
+  // Lottie
+  "lottie-player": "lottie",
+  "dotlottie-player": "dotlottie",
+};
+
+const DATA_NS_BRANDS: Record<string, string> = {
+  "radix": "radix-ui",
+  "headlessui": "headless-ui",
+  "framer": "framer-motion",
+  "aos": "aos",
+};
+
+function detectLibraries(signals: HTMLSignals): string[] {
+  const libs = new Set<string>();
+
+  // 1. CDN script URLs → exact package names (highest confidence)
+  for (const lib of signals.script_libraries) {
+    if (lib.cdn) {
+      // From a CDN — the package name is exactly what the URL says
+      libs.add(lib.version ? `${lib.package}@${lib.version}` : lib.package);
+    }
+  }
+
+  // 2. Class prefix clusters → component library detection
+  for (const cluster of signals.prefix_clusters) {
+    if (cluster.library) {
+      libs.add(cluster.library);
+    } else {
+      // Unknown prefix with 3+ unique classes — report as-is, don't drop it
+      libs.add(`${cluster.prefix}* (${cluster.unique_classes} classes)`);
+    }
+  }
+
+  // 3. Custom elements → web component library detection
+  for (const el of signals.custom_elements) {
+    const brand = CUSTOM_ELEMENT_BRANDS[el];
+    if (brand) {
+      libs.add(brand);
+    } else {
+      // Unknown custom element — report the element name so it's visible
+      libs.add(`<${el}>`);
+    }
+  }
+
+  // 4. data-* namespaces → framework/library annotations
+  for (const ns of signals.data_namespaces) {
+    const brand = DATA_NS_BRANDS[ns];
+    if (brand && !libs.has(brand)) libs.add(brand);
+    // Known framework namespaces that aren't "libraries" — skip
+    // (sveltekit, astro, etc. are framework-level, already in framework field)
+  }
+
+  return [...libs];
+}
+
+// ── State management detection ────────────────────────────────────────────────
+// Detected from inline script content and script src filenames.
+// These are bundled and minified in production — only detectable from named chunks
+// or global markers left in HTML.
+
+const STATE_MARKERS: Array<{ name: string; pattern: RegExp }> = [
+  { name: "redux",       pattern: /redux(?:js)?/i },
+  { name: "zustand",     pattern: /zustand/i },
+  { name: "jotai",       pattern: /jotai/i },
+  { name: "recoil",      pattern: /recoil/i },
+  { name: "mobx",        pattern: /mobx/i },
+  { name: "valtio",      pattern: /valtio/i },
+  { name: "pinia",       pattern: /pinia/i },
+  { name: "vuex",        pattern: /vuex/i },
+  { name: "xstate",      pattern: /xstate/i },
+  { name: "tanstack-query", pattern: /@tanstack\/(react-)?query/i },
+  { name: "swr",         pattern: /['"]swr['"]/i },
 ];
 
-// ── State management signals ──────────────────────────────────────────────────
+function detectState(html: string, signals: HTMLSignals): string[] {
+  const state: string[] = [];
 
-const STATE_SIGNALS: Array<{ name: string; pattern: RegExp }> = [
-  { name: "zustand",      pattern: /zustand/ },
-  { name: "redux",        pattern: /redux(?:js)?/ },
-  { name: "mobx",         pattern: /mobx/ },
-  { name: "jotai",        pattern: /jotai/ },
-  { name: "recoil",       pattern: /recoil/ },
-  { name: "valtio",       pattern: /valtio/ },
-  { name: "pinia",        pattern: /pinia/ },
-  { name: "vuex",         pattern: /vuex/ },
-  { name: "context-api",  pattern: /React\.createContext|useContext/ },
-  { name: "xstate",       pattern: /xstate/ },
-];
+  // Check script libraries from CDN (exact)
+  for (const lib of signals.script_libraries) {
+    for (const { name, pattern } of STATE_MARKERS) {
+      if (pattern.test(lib.package) && !state.includes(name)) state.push(name);
+    }
+  }
 
-// ── Library signals ───────────────────────────────────────────────────────────
+  // Check bundled chunk names
+  for (const asset of signals.asset_urls) {
+    for (const { name, pattern } of STATE_MARKERS) {
+      if (pattern.test(asset.url) && !state.includes(name)) state.push(name);
+    }
+  }
 
-const LIB_SIGNALS: Array<{ name: string; pattern: RegExp }> = [
-  { name: "framer-motion",    pattern: /framer-motion/ },
-  { name: "gsap",             pattern: /gsap(?:\.min)?\.js|TweenMax|TimelineMax/ },
-  { name: "three.js",         pattern: /three(?:\.min)?\.js/ },
-  { name: "d3",               pattern: /d3(?:\.min)?\.js/ },
-  { name: "chart.js",         pattern: /chart(?:\.min)?\.js/ },
-  { name: "swiper",           pattern: /swiper/ },
-  { name: "embla-carousel",   pattern: /embla-carousel/ },
-  { name: "radix-ui",         pattern: /radix-ui|@radix/ },
-  { name: "headlessui",       pattern: /headlessui/ },
-  { name: "react-query",      pattern: /react-query|@tanstack\/react-query/ },
-  { name: "swr",              pattern: /swr/ },
-  { name: "axios",            pattern: /axios/ },
-  { name: "stripe",           pattern: /js\.stripe\.com/ },
-  { name: "mapbox",           pattern: /mapbox-gl/ },
-  { name: "google-maps",      pattern: /maps\.googleapis\.com/ },
-  { name: "intercom",         pattern: /intercom-snippet/ },
-  { name: "segment",          pattern: /cdn\.segment\.com/ },
-  { name: "hotjar",           pattern: /hotjar/ },
-  { name: "google-analytics", pattern: /gtag|ga\.js|analytics\.js/ },
-  { name: "vercel-analytics", pattern: /vercel\.com\/insights/ },
-  { name: "lottie",           pattern: /lottie(?:-web)?/ },
-  { name: "aos",              pattern: /aos\.js|data-aos=/ },
-  { name: "locomotive-scroll",pattern: /locomotive-scroll/ },
-  { name: "lenis",            pattern: /lenis(?:\.min)?\.js|from\s+['"]@studio-freight\/lenis['"]|new\s+Lenis\(/ },
-  { name: "splittype",        pattern: /split-type|SplitType/ },
-  { name: "shadcn/ui",        pattern: /data-radix-|class="[^"]*(?:radix-|cmdk-)[^"]*"/ },
-  { name: "tanstack/query",   pattern: /@tanstack\/(?:react-)?query/ },
-  { name: "clerk",            pattern: /clerk(?:\.dev|\.com|js)|ClerkProvider/ },
-  { name: "supabase",         pattern: /supabase(?:\.com|\.js)|createClient.*supabase/ },
-  { name: "prismic",          pattern: /prismic(?:\.io|\.js)|@prismicio/ },
-  { name: "contentful",       pattern: /contentful(?:\.com)?|createClient.*contentful/ },
-];
+  // Inline HTML markers (globals, JSX context)
+  for (const { name, pattern } of STATE_MARKERS) {
+    if (pattern.test(html) && !state.includes(name)) state.push(name);
+  }
 
-// ── Rendering strategy detection ──────────────────────────────────────────────
+  return state;
+}
+
+// ── Rendering strategy ────────────────────────────────────────────────────────
 
 export function detectRendering(html: string): RenderingStrategy {
-  // SSG/SSR: meaningful content in HTML (not just a root div)
   const bodyContent = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] ?? "";
   const textContent = bodyContent.replace(/<[^>]+>/g, "").trim();
 
-  const hasNextData = /__NEXT_DATA__/.test(html);
+  const hasNextData    = /__NEXT_DATA__/.test(html);
   const hasStaticProps = /"__N_SSG":true/.test(html);
   const hasServerProps = /"__N_SSP":true/.test(html);
-  const isISR = /"__N_SSG":true/.test(html) && /x-nextjs-cache/.test(html);
-  const isPureSpa =
-    textContent.length < 300 &&
+  const isISR          = hasStaticProps && /x-nextjs-cache/.test(html);
+  const isPureSpa      = textContent.length < 300 &&
     /<div\s+id=["'](root|app|__next)["']/i.test(bodyContent);
 
   if (isISR) return "isr";
@@ -313,64 +277,30 @@ export function detectRendering(html: string): RenderingStrategy {
   return "unknown";
 }
 
-// ── Meta framework ────────────────────────────────────────────────────────────
+// ── Meta-framework / hosting ──────────────────────────────────────────────────
 
-export function detectMetaFramework(html: string): string | null {
-  if (/x-vercel-id|vercel\.app/.test(html)) return "vercel";
-  if (/netlify/.test(html)) return "netlify";
-  if (/cloudflare/.test(html)) return "cloudflare-pages";
-  if (/amazonaws\.com/.test(html)) return "aws";
+function detectMetaFramework(html: string, signals: HTMLSignals): string | null {
+  // Check asset URLs for hosting-specific patterns
+  const assetStr = signals.asset_urls.map((a) => a.url).join("\n");
+  if (/vercel\.app|x-vercel-id/.test(html + assetStr)) return "vercel";
+  if (/netlify\.app|netlify\.com/.test(html + assetStr)) return "netlify";
+  if (/cloudflare\.com|\.pages\.dev/.test(assetStr)) return "cloudflare-pages";
+  if (/amazonaws\.com/.test(assetStr)) return "aws";
+  if (/fly\.io/.test(assetStr)) return "fly.io";
   return null;
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-export function detectTechStack(html: string, cssTexts: string[]): TechStack {
+export function detectTechStack(html: string, cssTexts: string[], signals: HTMLSignals): TechStack {
   const cssAll = cssTexts.join("\n");
 
-  // Framework — require at least 2 matching signals for frameworks with many weak patterns,
-  // but allow a single strong (dedicated) signal to match alone.
-  // Single-signal frameworks (remix, sveltekit) have distinctive enough tokens.
-  let framework = "unknown";
-  for (const fw of FRAMEWORK_SIGNALS) {
-    const matchCount = fw.signals.filter((sig) => {
-      const source = sig.in === "css" ? cssAll : html;
-      return sig.pattern.test(source);
-    }).length;
-    const needed = fw.signals.length === 1 ? 1 : Math.min(2, fw.signals.length);
-    if (matchCount >= needed) {
-      framework = fw.name;
-      break;
-    }
-  }
-
-  // Styling (can be multiple) — respect minSignals threshold per entry
-  const styling = STYLING_SIGNALS
-    .filter(({ signals, minSignals = 1 }) => {
-      const matchCount = signals.filter((sig) => {
-        const source = sig.in === "css" ? cssAll : html;
-        return sig.pattern.test(source);
-      }).length;
-      return matchCount >= minSignals;
-    })
-    .map(({ name }) => name);
-
-  // State management
-  const state = STATE_SIGNALS
-    .filter(({ pattern }) => pattern.test(html))
-    .map(({ name }) => name);
-
-  // Libraries
-  const detected_libs = LIB_SIGNALS
-    .filter(({ pattern }) => pattern.test(html) || pattern.test(cssAll))
-    .map(({ name }) => name);
-
   return {
-    framework,
-    styling: styling.length ? styling : ["unknown"],
-    state,
-    rendering: detectRendering(html),
-    detected_libs,
-    meta_framework: detectMetaFramework(html),
+    framework:     detectFramework(html, signals),
+    styling:       detectStyling(html, cssAll),
+    state:         detectState(html, signals),
+    rendering:     detectRendering(html),
+    detected_libs: detectLibraries(signals),
+    meta_framework: detectMetaFramework(html, signals),
   };
 }

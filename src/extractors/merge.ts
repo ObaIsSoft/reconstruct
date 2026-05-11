@@ -2,7 +2,8 @@
 // Takes all per-page CascadePages and produces a unified ReconstructSchema
 // This is the final step before caching — all extractors converge here.
 
-import type { ReconstructSchema, ComponentToken, NavItem, CoverageReport } from "../schema/types.js";
+import type { ReconstructSchema, ComponentToken, NavItem, CoverageReport, CSSBlock } from "../schema/types.js";
+import { allText } from "../schema/types.js";
 import type { CrawlResult, CascadePage } from "../scrapers/cascade.js";
 import { extractCSSTokens } from "./css.js";
 import { buildPageNode, detectGridSystem, parseNavItems, detectAccessibilityGrade } from "./dom.js";
@@ -10,6 +11,7 @@ import { detectTechStack } from "./tech.js";
 import { extractInteractions } from "./interactions.js";
 import { inferPhilosophy } from "./philosophy.js";
 import { extractContent } from "./content.js";
+import { extractHTMLSignals } from "./signals.js";
 import { createHash } from "crypto";
 
 // ── Shared component detection ────────────────────────────────────────────────
@@ -50,33 +52,36 @@ function mergeNavLinks(
 
 // ── CSS aggregation ───────────────────────────────────────────────────────────
 
-function aggregateCss(pages: CascadePage[]): string[] {
-  const seenContent = new Set<string>();
-  const cssTexts: string[] = [];
+function aggregateCss(pages: CascadePage[]): CSSBlock[] {
+  const seenUrls = new Set<string>();
+  const blocks: CSSBlock[] = [];
 
   for (const page of pages) {
-    // 1. Process explicit CSS text from the scraper (e.g. captured browser rules)
-    for (const css of page.css_text) {
-      if (!css) continue;
-      const hash = css.trim().slice(0, 1000); // 1000 chars for safe dedupe
-      if (!seenContent.has(hash)) {
-        seenContent.add(hash);
-        cssTexts.push(css);
+    // 1. Fetched and captured CSS (url is unique per stylesheet or captured:pageUrl)
+    for (const block of page.css_text) {
+      if (!block.text.trim()) continue;
+      // For captured: blocks, key by url+content prefix to avoid duplicate CSSOM dumps
+      const key = block.url.startsWith("captured:")
+        ? `${block.url}::${block.text.slice(0, 200)}`
+        : block.url;
+      if (!seenUrls.has(key)) {
+        seenUrls.add(key);
+        blocks.push(block);
       }
     }
 
-    // 2. Process inline styles
-    for (const css of page.inline_styles) {
-      if (!css) continue;
-      const hash = css.trim().slice(0, 500);
-      if (!seenContent.has(hash)) {
-        seenContent.add(hash);
-        cssTexts.push(css);
+    // 2. Inline <style> blocks (url is inline:pageUrl — may differ per page)
+    for (const block of page.inline_styles) {
+      if (!block.text.trim()) continue;
+      const key = `${block.url}::${block.text.slice(0, 200)}`;
+      if (!seenUrls.has(key)) {
+        seenUrls.add(key);
+        blocks.push(block);
       }
     }
   }
 
-  return cssTexts.filter(Boolean);
+  return blocks;
 }
 
 // ── Content hash ──────────────────────────────────────────────────────────────
@@ -130,9 +135,12 @@ export async function mergeCrawlToSchema(
   const allCss = aggregateCss(pages);
   const baseHostname = new URL(startUrl).hostname;
 
+  // Extract structural signals from HTML — the raw evidence layer
+  const signals = extractHTMLSignals(homePage.html, startUrl);
+
   // Run all extractors
   const cssTokens = extractCSSTokens(allCss, homePage.html);
-  const techStack = detectTechStack(homePage.html, allCss);
+  const techStack = detectTechStack(homePage.html, allText(allCss), signals);
   const interactions = extractInteractions(allCss, homePage.html);
   const grid = detectGridSystem(homePage.html, allCss);
   const accessibilityGrade = detectAccessibilityGrade(homePage.html, allCss);
@@ -238,7 +246,7 @@ export async function mergeCrawlToSchema(
     philosophy,
 
     raw: {
-      css_text: allCss,
+      css_text: allText(allCss),
       dom_snapshot: homePage.semantic_tree,
       asset_urls: assetUrls.slice(0, 100),
       stylesheet_urls: [...new Set(pages.flatMap((p) => p.stylesheet_urls))],
