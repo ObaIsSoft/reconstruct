@@ -48,7 +48,18 @@ function inferElementFromSelector(selector: string): string {
   return "element";
 }
 
-// ── Hover / focus / active patterns ──────────────────────────────────────────
+// Pseudo-classes that describe document structure, not user interaction.
+// Rules using only these are skipped — they don't reflect interactive behavior.
+const STRUCTURAL_PSEUDOS = new Set([
+  "first-child", "last-child", "nth-child", "nth-last-child",
+  "nth-of-type", "nth-last-of-type", "first-of-type", "last-of-type",
+  "only-child", "only-of-type", "root", "empty",
+  "is", "where", "not", "has", "any",
+  "first-line", "first-letter", "selection", "marker", "backdrop",
+  "before", "after", "placeholder",
+]);
+
+// ── Interaction pattern extraction ────────────────────────────────────────────
 
 export function extractHoverPatterns(cssTexts: string[]): InteractionToken[] {
   const tokens: InteractionToken[] = [];
@@ -57,20 +68,22 @@ export function extractHoverPatterns(cssTexts: string[]): InteractionToken[] {
     const blocks = parseRuleBlocks(css);
 
     for (const { selector, properties } of blocks) {
-      const isHover = /:hover/.test(selector);
-      const isFocus = /:focus/.test(selector) || /:focus-visible/.test(selector);
-      const isActive = /:active/.test(selector);
+      // Extract every pseudo-class present in the selector
+      const pseudoMatches = [...selector.matchAll(/:([a-z][\w-]*)(?:\([^)]*\))?/gi)];
+      if (pseudoMatches.length === 0) continue;
 
-      if (!isHover && !isFocus && !isActive) continue;
+      // Collect non-structural pseudo-classes from this selector
+      const interactionPseudos = pseudoMatches
+        .map((m) => m[1].toLowerCase())
+        .filter((p) => !STRUCTURAL_PSEUDOS.has(p));
+
+      if (interactionPseudos.length === 0) continue;
 
       const changes = changedProperties(properties);
       if (changes.length === 0) continue;
 
-      const state: InteractionToken["state"] = isHover
-        ? "hover"
-        : isFocus
-        ? "focus"
-        : "active";
+      // Use the first interaction pseudo-class as the state label
+      const state = interactionPseudos[0];
 
       const durationMatch = properties.match(/([\d.]+)(ms|s)/);
       const durationMs = durationMatch
@@ -87,10 +100,7 @@ export function extractHoverPatterns(cssTexts: string[]): InteractionToken[] {
           ? {
               property: changes[0] ?? "all",
               duration_ms: durationMs,
-              easing:
-                properties.match(
-                  /(?:ease[\w-]*|linear|cubic-bezier\([^)]+\))/i
-                )?.[0] ?? "ease",
+              easing: properties.match(/(?:ease[\w-]*|linear|cubic-bezier\([^)]+\))/i)?.[0] ?? "ease",
               trigger: state,
             }
           : undefined,
@@ -183,17 +193,21 @@ export function detectScrollBehaviors(
   const css = cssTexts.join("\n");
   const behaviors: string[] = [];
 
-  if (/position\s*:\s*sticky/.test(css)) behaviors.push("sticky-nav");
+  // Derived directly from CSS properties — these are definitive, not inferred
+  if (/position\s*:\s*sticky/.test(css)) behaviors.push("position:sticky");
   if (/scroll-behavior\s*:\s*smooth/.test(css) || /scroll-behavior="smooth"/.test(html))
-    behaviors.push("smooth-scroll");
-  if (/parallax/i.test(html + css)) behaviors.push("parallax");
-  if (/data-aos/.test(html) || /aos\.js/.test(html)) behaviors.push("scroll-reveal");
-  if (/locomotive-scroll/.test(html)) behaviors.push("locomotive-scroll");
-  if (/scroll-snap/.test(css)) behaviors.push("scroll-snap");
+    behaviors.push("scroll-behavior:smooth");
+  if (/scroll-snap-type/.test(css)) behaviors.push("scroll-snap");
+  if (/overscroll-behavior/.test(css)) behaviors.push("overscroll-behavior");
+
+  // HTML-level evidence — structural, not library-name detection
+  if (/loading="lazy"/.test(html)) behaviors.push("native-lazy-loading");
   if (/IntersectionObserver/.test(html)) behaviors.push("intersection-observer");
-  if (/loading="lazy"/.test(html)) behaviors.push("lazy-load-images");
-  if (/scroll.*progress|progress.*scroll/i.test(html + css))
-    behaviors.push("scroll-progress");
+  if (/data-scroll|data-parallax/.test(html)) behaviors.push("data-driven-scroll");
+
+  // Animation-on-scroll libraries — detected from their actual data attribute signatures,
+  // not from library file names (which are bundled away in production)
+  if (/data-aos/.test(html)) behaviors.push("animate-on-scroll");
 
   return [...new Set(behaviors)];
 }

@@ -130,7 +130,9 @@ export function deriveDesignCharacter(tokens: CSSTokens, html: string): string[]
   const light = colors.filter((c) => isLight(c.value));
   const satRatio = colors.length > 0 ? saturated.length / colors.length : 0;
   const neutralRatio = colors.length > 0 ? neutral.length / colors.length : 0;
-  const gradientCount = (html.match(/gradient/g) ?? []).length;
+  // Use the CSS gradient function count from the token extractor — this counts actual
+  // CSS *-gradient() calls in first-party stylesheets, not arbitrary "gradient" text in HTML.
+  const gradientCount = tokens.gradient_function_count;
 
   if (gradientCount > 5) {
     descriptors.push("gradient-led color");
@@ -417,11 +419,28 @@ export function inferPhilosophy(
   accessibilityGrade: AccessibilityGrade,
   content?: ContentTokens
 ): DesignPhilosophy {
+  // Data quality gate — don't infer design character from thin signal.
+  // If we have fewer than 3 colors OR no typography data, the CSS we captured
+  // is insufficient for reliable inference. Return a diagnostic output instead.
+  const hasAdequateColorData = tokens.colors.length >= 3;
+  const hasAdequateTypeData = tokens.typography.families.length >= 1 || tokens.typography.scale.length >= 3;
+
+  if (!hasAdequateColorData || !hasAdequateTypeData) {
+    return {
+      design_school: ["undetermined — insufficient CSS signal (too few colors or no typography data captured)"],
+      density: "moderate",
+      personality: ["neutral"],
+      accessibility_grade: accessibilityGrade,
+      whitespace_use: "moderate",
+      visual_hierarchy_method: inferHierarchyMethods(tokens),
+    };
+  }
+
   const design_school = deriveDesignCharacter(tokens, html);
   const personality = derivePersonality(tokens, html, content);
 
   return {
-    design_school: design_school.length > 0 ? design_school : ["undetermined — insufficient token signal"],
+    design_school: design_school.length > 0 ? design_school : ["undetermined — token signal insufficient for characterization"],
     density: inferDensity(tokens),
     personality: personality.length > 0 ? personality : ["neutral"],
     accessibility_grade: accessibilityGrade,

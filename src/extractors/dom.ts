@@ -7,38 +7,46 @@ import { classifyUrl } from "../scrapers/cascade.js";
 import type { CascadePage } from "../scrapers/cascade.js";
 
 // ── Section detection ─────────────────────────────────────────────────────────
-
-interface SectionSignal {
-  name: string;
-  patterns: RegExp[];
-}
-
-const SECTION_SIGNALS: SectionSignal[] = [
-  { name: "hero",          patterns: [/class="[^"]*hero[^"]*"/i, /id="hero"/i, /role="banner"/i] },
-  { name: "nav",           patterns: [/<nav\b/i, /role="navigation"/i, /class="[^"]*navbar[^"]*"/i] },
-  { name: "features",      patterns: [/class="[^"]*feature[^"]*"/i, /id="features"/i, /class="[^"]*benefits[^"]*"/i] },
-  { name: "pricing",       patterns: [/class="[^"]*pric[^"]*"/i, /id="pricing"/i] },
-  { name: "testimonials",  patterns: [/class="[^"]*testimonial[^"]*"/i, /class="[^"]*review[^"]*"/i, /class="[^"]*quote[^"]*"/i] },
-  { name: "cta",           patterns: [/class="[^"]*cta[^"]*"/i, /class="[^"]*call-to-action[^"]*"/i] },
-  { name: "faq",           patterns: [/class="[^"]*faq[^"]*"/i, /id="faq"/i] },
-  { name: "team",          patterns: [/class="[^"]*team[^"]*"/i, /id="team"/i] },
-  { name: "blog",          patterns: [/class="[^"]*blog[^"]*"/i, /class="[^"]*posts[^"]*"/i, /class="[^"]*articles[^"]*"/i] },
-  { name: "gallery",       patterns: [/class="[^"]*gallery[^"]*"/i, /class="[^"]*grid[^"]*"/i] },
-  { name: "stats",         patterns: [/class="[^"]*stat[^"]*"/i, /class="[^"]*metric[^"]*"/i, /class="[^"]*number[^"]*"/i] },
-  { name: "logos",         patterns: [/class="[^"]*logo[^"]*"/i, /class="[^"]*partner[^"]*"/i, /class="[^"]*brand[^"]*"/i] },
-  { name: "footer",        patterns: [/<footer\b/i, /role="contentinfo"/i] },
-  { name: "sidebar",       patterns: [/class="[^"]*sidebar[^"]*"/i, /role="complementary"/i] },
-  { name: "modal",         patterns: [/role="dialog"/i, /class="[^"]*modal[^"]*"/i, /class="[^"]*overlay[^"]*"/i] },
-  { name: "table",         patterns: [/<table\b/i, /role="grid"/i, /role="table"/i] },
-  { name: "form",          patterns: [/<form\b/i] },
-  { name: "video",         patterns: [/<video\b/i, /class="[^"]*video[^"]*"/i] },
-  { name: "map",           patterns: [/class="[^"]*map[^"]*"/i, /id="map"/i] },
-];
+// Structural approach — derive sections from what's in the HTML, not a vocabulary.
+// Primary signals: HTML5 sectioning elements and ARIA landmark roles.
+// Secondary: named <section> blocks, whose label comes from their content.
 
 export function detectSections(html: string): string[] {
-  return SECTION_SIGNALS
-    .filter(({ patterns }) => patterns.some((p) => p.test(html)))
-    .map(({ name }) => name);
+  const sections: string[] = [];
+
+  // 1. HTML5 sectioning elements — always report if present (spec-defined regions)
+  if (/<header\b/i.test(html)) sections.push("header");
+  if (/<nav\b/i.test(html)) sections.push("nav");
+  if (/<main\b/i.test(html)) sections.push("main");
+  if (/<footer\b/i.test(html)) sections.push("footer");
+  if (/<aside\b/i.test(html)) sections.push("aside");
+  if (/<article\b/i.test(html)) sections.push("article");
+
+  // 2. ARIA landmark roles — each distinct role is a region
+  const ARIA_LANDMARK_ROLES = new Set([
+    "banner", "navigation", "main", "contentinfo",
+    "complementary", "search", "form",
+    "dialog", "alertdialog", "tabpanel", "region",
+    "alert", "status", "progressbar",
+  ]);
+  for (const m of html.matchAll(/role=["']([^"']+)["']/gi)) {
+    const role = m[1].trim().toLowerCase();
+    if (ARIA_LANDMARK_ROLES.has(role) && !sections.includes(role)) sections.push(role);
+  }
+
+  // 3. Named <section> blocks — label comes from aria-label, id, or first heading.
+  //    This captures site-specific regions without requiring a hardcoded vocabulary.
+  for (const m of html.matchAll(/<section([^>]*?)>([\s\S]*?)<\/section>/gi)) {
+    const attrs = m[1];
+    const content = m[2];
+    const ariaLabel = attrs.match(/aria-label=["']([^"']+)["']/i)?.[1];
+    const id = attrs.match(/\bid=["']([^"']+)["']/i)?.[1];
+    const heading = content.match(/<h[1-6][^>]*>([^<]{1,60})<\/h[1-6]>/i)?.[1]?.trim();
+    const label = (ariaLabel ?? id ?? heading ?? "").toLowerCase().trim().slice(0, 40);
+    if (label && !sections.includes(label)) sections.push(label);
+  }
+
+  return [...new Set(sections)];
 }
 
 // ── Layout pattern detection ──────────────────────────────────────────────────
@@ -231,28 +239,40 @@ export function detectAccessibilityGrade(
   html: string,
   cssBlocks: CSSBlock[]
 ): "A" | "AA" | "AAA" | "none" | "unknown" {
-  const hasAriaLabels = /aria-label=/i.test(html);
-  const hasAriaRoles = /role=["']\w+["']/i.test(html);
-  const hasAltText = /<img[^>]+alt=["'][^"']+["']/i.test(html);
-  const hasLandmarks = /<(?:main|nav|header|footer|aside)\b/i.test(html);
-  const hasSkipLink = /skip(?:\s+to)?\s+(?:main|content)/i.test(html);
   // Use first-party CSS only — third-party components (media players, widgets)
-  // implement their own focus/motion styles which would inflate our accessibility score.
+  // implement their own focus/motion styles which would inflate the score.
   const fpCss = firstPartyText(cssBlocks).join("");
+
+  // Proportional: alt text coverage across all <img> elements
+  const totalImages = (html.match(/<img\b/gi) ?? []).length;
+  const imagesWithAlt = (html.match(/<img[^>]+alt=["'][^"']*["']/gi) ?? []).length;
+  const altRatio = totalImages > 0 ? imagesWithAlt / totalImages : 1;
+
+  // Proportional: ARIA labelling relative to interactive element count
+  const interactiveCount = (html.match(/<(?:button|a\s|input|select|textarea)\b/gi) ?? []).length;
+  const labelledCount = (html.match(/(?:aria-label|aria-labelledby|aria-describedby)=/gi) ?? []).length;
+  const ariaRatio = interactiveCount > 0 ? Math.min(labelledCount / interactiveCount, 1) : 0;
+
+  // Binary structural checks (presence/absence is sufficient signal here)
+  const hasLandmarks = /<(?:main|nav|header|footer|aside)\b/i.test(html)
+    || /role=["'](?:main|navigation|banner|contentinfo)["']/i.test(html);
+  const hasSkipLink = /skip(?:\s+to)?\s+(?:main|content)/i.test(html);
   const hasFocusStyles = fpCss.includes(":focus");
   const hasReducedMotion = fpCss.includes("prefers-reduced-motion");
+  const hasHeadingHierarchy = /<h1\b/i.test(html);
 
   const score =
-    (hasAriaLabels ? 1 : 0) +
-    (hasAriaRoles ? 1 : 0) +
-    (hasAltText ? 1 : 0) +
+    (altRatio > 0.9 ? 2 : altRatio > 0.5 ? 1 : 0) +
+    (ariaRatio > 0.5 ? 1 : 0) +
     (hasLandmarks ? 1 : 0) +
     (hasSkipLink ? 1 : 0) +
     (hasFocusStyles ? 1 : 0) +
-    (hasReducedMotion ? 1 : 0);
+    (hasReducedMotion ? 1 : 0) +
+    (hasHeadingHierarchy ? 1 : 0);
 
-  if (score >= 6) return "AAA";
-  if (score >= 4) return "AA";
+  if (totalImages === 0 && interactiveCount === 0) return "unknown";
+  if (score >= 7) return "AAA";
+  if (score >= 5) return "AA";
   if (score >= 2) return "A";
   if (score === 0) return "none";
   return "unknown";

@@ -110,10 +110,22 @@ function extractGradientColors(cssAll: string, varMap?: Map<string, string>): Ma
 
 function buildCssVarMap(cssText: string): Map<string, string> {
   const vars = new Map<string, string>();
-  const rootRe = /:root\s*\{([^}]+)\}/g;
-  for (const m of cssText.matchAll(rootRe)) {
-    for (const prop of m[1].matchAll(/--([\w-]+)\s*:\s*([^;]+);/g)) {
-      vars.set(`--${prop[1].trim()}`, prop[2].trim());
+  // Scan ALL rule blocks — custom properties can be defined on any selector:
+  // :root, html, .dark, [data-theme="dark"], component classes, etc.
+  // :root/:html definitions win — they're the canonical light-mode values.
+  // Collect both so non-root-only vars (dark theme overrides, component vars) are captured.
+  const ruleRe = /([^{}]*)\{([^{}]+)\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = ruleRe.exec(cssText)) !== null) {
+    const selector = m[1].trim();
+    const block = m[2];
+    const isRoot = /^(?::root|html)$/.test(selector);
+    for (const prop of block.matchAll(/--([\w-]+)\s*:\s*([^;]+);/g)) {
+      const name = `--${prop[1].trim()}`;
+      const value = prop[2].trim();
+      if (isRoot || !vars.has(name)) {
+        vars.set(name, value);
+      }
     }
   }
   return vars;
@@ -266,12 +278,25 @@ export function extractColors(
 
 // ── Typography extraction ─────────────────────────────────────────────────────
 
-function inferFontRole(selector: string): FontRole {
-  const s = selector.toLowerCase();
-  if (/h[1-6]|\.heading|\.title|\.display/.test(s)) return "heading";
-  if (/code|pre|mono|\.mono/.test(s)) return "mono";
-  if (/body|p\b|\.body|\.text/.test(s)) return "body";
-  if (/\.display|hero/.test(s)) return "display";
+function inferFontRoleFromSelectors(selectors: string[]): FontRole {
+  let headingScore = 0, bodyScore = 0, monoScore = 0, displayScore = 0;
+  for (const s of selectors) {
+    const low = s.toLowerCase();
+    // Semantic HTML elements — high certainty
+    if (/\bh[1-6]\b/.test(low)) headingScore += 3;
+    if (/\bcode\b|\bpre\b/.test(low)) monoScore += 3;
+    if (/\bbody\b|\bp\b/.test(low)) bodyScore += 3;
+    // Class/id naming — lower weight, inferred
+    if (/heading|title/.test(low)) headingScore += 1;
+    if (/\bdisplay\b/.test(low)) displayScore += 1;
+    if (/mono/.test(low)) monoScore += 1;
+    if (/\.body\b|\.text\b/.test(low)) bodyScore += 1;
+  }
+  const max = Math.max(headingScore, bodyScore, monoScore, displayScore);
+  if (max === 0) return "body";
+  if (monoScore === max) return "mono";
+  if (displayScore === max && displayScore > headingScore) return "display";
+  if (headingScore === max) return "heading";
   return "body";
 }
 
@@ -430,7 +455,7 @@ export function extractTypography(
       family: primary,
       source: inferFontSource(primary, full),
       weights: data.weights.size > 0 ? [...data.weights].sort() : [400],
-      role: inferFontRole(data.selectors[0] ?? ""),
+      role: inferFontRoleFromSelectors(data.selectors),
     }));
 
   return { families, scale, base_size, line_height_base, letter_spacing_pattern };
@@ -558,22 +583,12 @@ export function extractMotion(cssTexts: string[]): {
   // transitions
   for (const m of full.matchAll(/transition\s*:\s*([^;}]+)/gi)) {
     const val = m[1];
-    // duration in ms or s
     for (const dm of val.matchAll(/([\d.]+)(ms|s)\b/g)) {
       const ms = dm[2] === "s" ? Math.round(parseFloat(dm[1]) * 1000) : Math.round(parseFloat(dm[1]));
       if (ms > 0 && ms < 5000) durations.add(ms);
     }
-    // easing
     const easingMatch = val.match(/(?:ease[\w-]*|linear|cubic-bezier\([^)]+\)|steps\([^)]+\))/i);
     if (easingMatch) easings.add(easingMatch[0].trim());
-    // property pattern
-    const propMatch = val.match(/^([\w-]+)/);
-    if (propMatch) {
-      const prop = propMatch[1];
-      if (prop === "transform") patterns.add("scale-or-move");
-      else if (prop === "opacity") patterns.add("fade");
-      else if (prop === "all") patterns.add("all-properties");
-    }
   }
 
   // animations
@@ -585,17 +600,10 @@ export function extractMotion(cssTexts: string[]): {
     }
   }
 
-  // @keyframes names → infer animation pattern names
+  // @keyframes — use the actual name defined in CSS, not an inferred label.
+  // The keyframe name is what the author chose; it's more accurate than any mapping.
   for (const m of full.matchAll(/@keyframes\s+([\w-]+)/gi)) {
-    const name = m[1].toLowerCase();
-    if (/fade/.test(name)) patterns.add("fade");
-    if (/slide/.test(name)) patterns.add("slide");
-    if (/scale|zoom/.test(name)) patterns.add("scale-in");
-    if (/spin|rotate/.test(name)) patterns.add("spin");
-    if (/bounce/.test(name)) patterns.add("bounce");
-    if (/shake|wiggle/.test(name)) patterns.add("shake");
-    if (/pulse/.test(name)) patterns.add("pulse");
-    if (/float|hover/.test(name)) patterns.add("float");
+    patterns.add(m[1]);
   }
 
   const has_reduced_motion_support =
@@ -689,6 +697,7 @@ export interface CSSTokens {
   colors: ColorToken[];
   color_strategy: "monochrome" | "analogous" | "complementary" | "triadic" | "unknown";
   dark_mode: boolean;
+  gradient_function_count: number;  // count of *-gradient() calls in first-party CSS
   typography: TypographySchema;
   spacing: ReturnType<typeof extractSpacing>;
   elevation: ShadowToken[];
@@ -720,10 +729,16 @@ export function extractCSSTokens(blocks: CSSBlock[], rawContext?: string): CSSTo
   // components (media players, widgets) falsely triggering dark_mode: true.
   const dark_mode = countDarkModeDeclarations(fpContext) >= 3;
 
+  // Count actual CSS gradient function calls in first-party CSS.
+  // This is more reliable than counting "gradient" mentions in HTML which picks up
+  // class names, script content, and other non-CSS text.
+  const gradient_function_count = (fpContext.match(/(?:linear|radial|conic)-gradient\s*\(/gi) ?? []).length;
+
   return {
     colors,
     color_strategy: detectColorStrategy(colors),
     dark_mode,
+    gradient_function_count,
     typography,
     // Elevation and motion use first-party only — third-party player/widget CSS
     // inflates these with its own animation values and shadow layers.

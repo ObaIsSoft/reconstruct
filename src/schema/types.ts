@@ -103,7 +103,7 @@ export interface MotionToken {
 
 export interface InteractionToken {
   element: string;         // "button", "card", "nav-link"
-  state: "hover" | "focus" | "active" | "disabled";
+  state: string;           // CSS pseudo-class name: "hover", "focus", "active", "checked", "focus-visible", etc.
   changes: string[];       // ["background-color", "transform", "box-shadow"]
   motion?: MotionToken;
 }
@@ -246,7 +246,7 @@ export interface ReconstructSchema {
   interactions: {
     global_hover_patterns: InteractionToken[];
     focus_strategy: "native" | "custom" | "hidden" | "mixed";
-    scroll_behaviors: string[];   // ["sticky-nav", "parallax", "progress-bar"]
+    scroll_behaviors: string[];   // derived from CSS properties: ["position:sticky", "scroll-behavior:smooth", "scroll-snap", ...]
     transitions: TransitionToken[];
   };
 

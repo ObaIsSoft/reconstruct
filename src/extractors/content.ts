@@ -56,26 +56,63 @@ function extractImages(html: string, pageUrl: string): ImageAsset[] {
   const assets: ImageAsset[] = [];
   const seen = new Set<string>();
 
-  // <img> tags
+  const addAsset = (src: string, alt: string) => {
+    if (!src || seen.has(src)) return;
+    seen.add(src);
+    assets.push({
+      src,
+      alt,
+      role: inferImageRole(src, alt),
+      is_gif: src.toLowerCase().endsWith(".gif"),
+      pages_present: [pageUrl],
+    });
+  };
+
+  // <img> tags — check src, data-src (lazy), data-lazy-src, data-original
   const imgRe = /<img([^>]*)>/gi;
   let m: RegExpExecArray | null;
   while ((m = imgRe.exec(html)) !== null) {
     const attrs = m[1];
-    const srcMatch = attrs.match(/src=["']([^"']+)["']/i);
-    const altMatch = attrs.match(/alt=["']([^"']*)["']/i);
-    if (!srcMatch) continue;
-    const src = srcMatch[1];
-    if (seen.has(src)) continue;
-    seen.add(src);
-    const alt = altMatch ? altMatch[1] : "";
-    const role = inferImageRole(src, alt);
-    assets.push({
-      src,
-      alt,
-      role,
-      is_gif: src.toLowerCase().endsWith(".gif"),
-      pages_present: [pageUrl],
-    });
+    const alt = attrs.match(/alt=["']([^"']*)["']/i)?.[1] ?? "";
+    // src — standard
+    const src = attrs.match(/\bsrc=["']([^"']+)["']/i)?.[1];
+    if (src) addAsset(src, alt);
+    // data-src / data-lazy-src / data-original — lazy loading patterns
+    for (const attr of ["data-src", "data-lazy-src", "data-original", "data-image"]) {
+      const lazy = attrs.match(new RegExp(`${attr}=["']([^"']+)["']`, "i"))?.[1];
+      if (lazy && lazy !== src) addAsset(lazy, alt);
+    }
+    // srcset — extract each URL from "url 1x, url 2x" or "url 640w, url 1280w"
+    const srcset = attrs.match(/\bsrcset=["']([^"']+)["']/i)?.[1];
+    if (srcset) {
+      for (const entry of srcset.split(",")) {
+        const url = entry.trim().split(/\s+/)[0];
+        if (url) addAsset(url, alt);
+      }
+    }
+  }
+
+  // <picture><source> tags — responsive image sets
+  const pictureRe = /<picture[^>]*>([\s\S]*?)<\/picture>/gi;
+  while ((m = pictureRe.exec(html)) !== null) {
+    const picContent = m[1];
+    // Find the <img> inside for alt text
+    const innerAlt = picContent.match(/<img[^>]+alt=["']([^"']*)["']/i)?.[1] ?? "";
+    // Extract each <source srcset> or <source src>
+    const sourceRe = /<source([^>]*)>/gi;
+    let sm: RegExpExecArray | null;
+    while ((sm = sourceRe.exec(picContent)) !== null) {
+      const sAttrs = sm[1];
+      const srcset = sAttrs.match(/\bsrcset=["']([^"']+)["']/i)?.[1];
+      if (srcset) {
+        for (const entry of srcset.split(",")) {
+          const url = entry.trim().split(/\s+/)[0];
+          if (url) addAsset(url, innerAlt);
+        }
+      }
+      const src = sAttrs.match(/\bsrc=["']([^"']+)["']/i)?.[1];
+      if (src) addAsset(src, innerAlt);
+    }
   }
 
   return assets;
