@@ -1546,6 +1546,130 @@ function interpretContent(schema: ReconstructSchema, tier: Tier): string {
   return lines.join("\n");
 }
 
+// ── Understanding section ─────────────────────────────────────────────────────
+// Visual idioms, CSS component system, behavioral capabilities.
+// Every string is constructed from the actual data fields — no lookup tables.
+
+function interpretUnderstanding(schema: ReconstructSchema, tier: Tier): string {
+  const u = schema.understanding;
+  if (!u) return "";
+
+  const { visual_patterns, component_definitions, behavior_patterns } = u;
+  if (!visual_patterns.length && !component_definitions.length && !behavior_patterns.length) return "";
+
+  if (tier === "ai") return `## Understanding\n\`\`\`json\n${JSON.stringify(u, null, 2)}\n\`\`\``;
+
+  const lines: string[] = ["## How It Works — Patterns & Capabilities"];
+
+  // ── Visual CSS idioms ──────────────────────────────────────────────────────
+  if (visual_patterns.length > 0) {
+    if (tier === "succinct") {
+      lines.push(`**Visual idioms (${visual_patterns.length}):** ${visual_patterns.map(p => p.label).join(", ")}`);
+    } else {
+      lines.push("", "### Visual CSS Idioms");
+      const byConf = {
+        definite: visual_patterns.filter(p => p.confidence === "definite"),
+        strong:   visual_patterns.filter(p => p.confidence === "strong"),
+        possible: visual_patterns.filter(p => p.confidence === "possible"),
+      };
+      for (const p of [...byConf.definite, ...byConf.strong, ...byConf.possible]) {
+        const confTag = p.confidence !== "definite" ? ` _(${p.confidence})_` : "";
+        const ev = p.evidence.join(" · ");
+        const sel = p.selectors.length > 0 ? ` — \`${p.selectors.slice(0, 2).join("`, `")}\`` : "";
+        lines.push(`- **${p.label}**${confTag}: ${ev}${sel}`);
+      }
+      if (tier === "newbie") {
+        const total = visual_patterns.length;
+        const defCount = byConf.definite.length;
+        lines.push(
+          "",
+          defCount === total
+            ? `All ${total} pattern${total > 1 ? "s" : ""} confirmed — each CSS property combination is unambiguous.`
+            : byConf.possible.length > total / 2
+            ? `${byConf.possible.length} of ${total} patterns are possible-confidence — the evidence is partial, likely due to minified or unconventionally structured CSS.`
+            : `${defCount} confirmed · ${byConf.strong.length} strong · ${byConf.possible.length} possible.`
+        );
+      }
+    }
+  }
+
+  // ── CSS component system ───────────────────────────────────────────────────
+  if (tier !== "succinct" && component_definitions.length > 0) {
+    const interactive = component_definitions.filter(c => c.is_interactive);
+    const limit = tier === "professional" ? 10 : 15;
+    const top = component_definitions.slice(0, limit);
+    lines.push("", "### CSS Component System");
+    lines.push(
+      `${component_definitions.length} components from CSS selector analysis` +
+      (interactive.length > 0 ? `, ${interactive.length} interactive` : "") + `:`
+    );
+    for (const c of top) {
+      const parts: string[] = [];
+      if (c.variants.length > 0) parts.push(`variants: ${c.variants.slice(0, 3).join(", ")}${c.variants.length > 3 ? "…" : ""}`);
+      if (c.states.length > 0) parts.push(`states: ${c.states.join("/")}`);
+      if (c.sub_elements.length > 0) parts.push(`sub: ${c.sub_elements.slice(0, 3).join(", ")}`);
+      const meta = parts.length > 0 ? ` _(${parts.join("; ")})_` : "";
+      lines.push(`- **${c.name}**${meta} · \`${c.selector_root}\` · ${c.selector_count} rules`);
+    }
+    if (tier === "newbie") {
+      const totalRules = component_definitions.reduce((s, c) => s + c.selector_count, 0);
+      const avgVariants = Math.round(
+        component_definitions.reduce((s, c) => s + c.variants.length, 0) / component_definitions.length * 10
+      ) / 10;
+      const avgStates = Math.round(
+        component_definitions.reduce((s, c) => s + c.states.length, 0) / component_definitions.length * 10
+      ) / 10;
+      lines.push(
+        "",
+        `${totalRules} CSS rules across ${component_definitions.length} components — ` +
+        `avg ${avgVariants} variant${avgVariants !== 1 ? "s" : ""} and ${avgStates} state${avgStates !== 1 ? "s" : ""} each. ` +
+        `${interactive.length} expose hover/focus/active states; ${component_definitions.length - interactive.length} are purely structural.`
+      );
+    }
+  }
+
+  // ── Behavioral capabilities ────────────────────────────────────────────────
+  if (behavior_patterns.length > 0) {
+    const definite = behavior_patterns.filter(p => p.confidence === "definite");
+    const strong   = behavior_patterns.filter(p => p.confidence === "strong");
+    const possible = behavior_patterns.filter(p => p.confidence === "possible");
+
+    if (tier === "succinct") {
+      lines.push(`**Capabilities (${behavior_patterns.length}):** ${definite.map(p => p.pattern).join(", ")}`);
+    } else {
+      lines.push("", "### Behavioral Capabilities");
+      // Each entry: pattern name + its actual evidence strings + elements — evidence IS the explanation
+      for (const b of behavior_patterns) {
+        const confTag = b.confidence !== "definite" ? ` _(${b.confidence})_` : "";
+        const ev = b.evidence.join(", ");
+        const els = b.elements.length > 0 ? ` · elements: ${b.elements.slice(0, 3).join(", ")}` : "";
+        lines.push(`- **${b.pattern}**${confTag}: ${ev}${els}`);
+      }
+      if (tier === "newbie") {
+        // Source breakdown — counts derived from the evidence strings themselves
+        const fromAria    = behavior_patterns.filter(b => b.evidence.some(e => e.startsWith("ARIA")));
+        const fromHtml    = behavior_patterns.filter(b => b.evidence.some(e => e.startsWith("<")));
+        const fromScripts = behavior_patterns.filter(b => b.evidence.some(e => /API|library|listener|init/.test(e)));
+        const fromData    = behavior_patterns.filter(b => b.evidence.some(e => e.startsWith("data-")));
+        const sourceParts = [
+          fromAria.length    > 0 ? `${fromAria.length} from ARIA roles`            : "",
+          fromHtml.length    > 0 ? `${fromHtml.length} from HTML5 elements`        : "",
+          fromData.length    > 0 ? `${fromData.length} from data-* attributes`     : "",
+          fromScripts.length > 0 ? `${fromScripts.length} from script/API patterns` : "",
+        ].filter(Boolean);
+        lines.push(
+          "",
+          `${definite.length} confirmed · ${strong.length} strong · ${possible.length} possible.` +
+          (sourceParts.length > 0 ? ` Sources: ${sourceParts.join(", ")}.` : ""),
+          `_Inferred from static HTML — JavaScript was not executed._`
+        );
+      }
+    }
+  }
+
+  return lines.filter(Boolean).join("\n");
+}
+
 // ── Main builder ───────────────────────────────────────────────────────────────
 
 export function buildExplanation(schema: ReconstructSchema, tier: string, focus: string): string {
@@ -1600,6 +1724,10 @@ export function buildExplanation(schema: ReconstructSchema, tier: string, focus:
   if (focus === "all" || focus === "tech") sections.push(interpretTech(schema, t));
   if (focus === "all" || focus === "design") sections.push(interpretDesign(schema, t));
   if (focus === "all" || focus === "interactions") sections.push(interpretInteractions(schema, t));
+  if (focus === "all") {
+    const understandingSection = interpretUnderstanding(schema, t);
+    if (understandingSection) sections.push(understandingSection);
+  }
   if (focus === "all" || focus === "philosophy") sections.push(interpretPhilosophy(schema, t));
   if (focus === "all") {
     const visualLang = interpretVisualLanguage(schema, t);

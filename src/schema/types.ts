@@ -270,12 +270,46 @@ export interface ReconstructSchema {
     visual_hierarchy_method: string[];  // ["size", "color", "weight", "spacing"]
   };
 
+  understanding?: {
+    visual_patterns: VisualPattern[];       // composite CSS idioms (frosted-glass, hover-lift, etc.)
+    component_definitions: ComponentDefinition[];  // CSS-derived component system
+    behavior_patterns: BehaviorPattern[];   // interactive capabilities from HTML/ARIA/scripts
+  };
+
   raw: {
     css_text: string[];         // full CSS contents (escape hatch for deep queries)
     dom_snapshot: string;       // semantic tree text
     asset_urls: string[];
     stylesheet_urls: string[];
   };
+}
+
+// ── Understanding layer — patterns, component system, behavioral capabilities ──
+
+export interface VisualPattern {
+  id: string;
+  label: string;
+  confidence: "definite" | "strong" | "possible";
+  selectors: string[];
+  evidence: string[];
+}
+
+export interface ComponentDefinition {
+  name: string;
+  selector_root: string;
+  states: string[];
+  variants: string[];
+  sub_elements: string[];
+  key_properties: string[];
+  is_interactive: boolean;
+  selector_count: number;
+}
+
+export interface BehaviorPattern {
+  pattern: string;
+  evidence: string[];
+  elements: string[];
+  confidence: "definite" | "strong" | "possible";
 }
 
 // Partial schema for incremental/surface-level analysis

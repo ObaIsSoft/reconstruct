@@ -12,6 +12,9 @@ import { extractInteractions } from "./interactions.js";
 import { inferPhilosophy } from "./philosophy.js";
 import { extractContent } from "./content.js";
 import { extractHTMLSignals } from "./signals.js";
+import { detectVisualPatterns } from "./patterns.js";
+import { assembleComponents } from "./components.js";
+import { detectBehaviorPatterns } from "./behaviors.js";
 import { createHash } from "crypto";
 
 // ── Shared component detection ────────────────────────────────────────────────
@@ -147,6 +150,14 @@ export async function mergeCrawlToSchema(
   const contentTokens = extractContent(pages, allCss);
   const philosophy = inferPhilosophy(cssTokens, homePage.html, accessibilityGrade, contentTokens);
 
+  // Understanding layer — runs on all pages' HTML for broader behavioral coverage
+  const allHtml = pages.map(p => p.html).join("\n");
+  const understanding = {
+    visual_patterns: detectVisualPatterns(allCss),
+    component_definitions: assembleComponents(allCss),
+    behavior_patterns: detectBehaviorPatterns(allHtml),
+  };
+
   // Build per-page nodes
   const pageNodes = pages.map((p) => buildPageNode(p, baseHostname));
 
@@ -244,6 +255,8 @@ export async function mergeCrawlToSchema(
     content: contentTokens,
 
     philosophy,
+
+    understanding,
 
     raw: {
       css_text: allText(allCss),
